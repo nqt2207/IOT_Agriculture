@@ -28,7 +28,9 @@ async function bootstrap() {
     exposedHeaders: ['Content-Disposition'],
   });
 
-  app.setGlobalPrefix(apiPrefix);
+  app.setGlobalPrefix(apiPrefix, {
+    exclude: ['/'],
+  });
   app.enableVersioning({
     type: VersioningType.URI,
   });
@@ -55,7 +57,7 @@ async function bootstrap() {
 
   const configService = app.get(ConfigService);
   const port = configService.get<number>('PORT') ?? 3000;
-  await app.listen(port);
+  await app.listen(port, '0.0.0.0');
   Logger.log(`Application started on port: ${port}`);
   
 
