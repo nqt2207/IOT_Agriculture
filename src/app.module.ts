@@ -11,6 +11,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { BbbModule } from './modules/bbb/bbb.module';
 import { AuthGuard } from './modules/auth/auth.guard';
 import { JwtModule } from '@nestjs/jwt';
+import { ZoneModule } from './modules/zone/zone.module';
 
 
 @Module({
@@ -21,6 +22,7 @@ import { JwtModule } from '@nestjs/jwt';
     AuthModule,
     BbbModule,
     JwtModule,
+    ZoneModule,
   ],
   controllers: [AppController],
   providers: [

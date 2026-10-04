@@ -28,10 +28,27 @@ export class TransformResponseInterceptor<T>
           return data;
         }
 
+        const response = context.switchToHttp().getResponse();
+
+        // Response có dạng { message, result }
+        if (
+          data &&
+          typeof data === 'object' &&
+          !Array.isArray(data) &&
+          'result' in data
+        ) {
+          return {
+            statusCode: response.statusCode,
+            message: data.message ?? 'Success',
+            data: data.result,
+          };
+        }
+
+        // Response dữ liệu trực tiếp
         return {
-          statusCode: <number>context.switchToHttp().getResponse().statusCode,
-          message: <string>data.message,
-          data: data.result,
+          statusCode: response.statusCode,
+          message: 'Success',
+          data,
         };
       }),
     );

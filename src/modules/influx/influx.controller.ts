@@ -1,14 +1,4 @@
-import { Controller, Post } from '@nestjs/common';
-import { InfluxService } from './influx.service';
+import { Controller } from '@nestjs/common';
 
 @Controller('influx')
-export class InfluxController {
-  constructor(
-    private readonly influxService: InfluxService,
-  ) {}
-
-  @Post('test')
-  async testWrite() {
-    return this.influxService.writeTestData();
-  }
-}
+export class InfluxController {}

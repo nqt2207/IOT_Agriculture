@@ -25,21 +25,41 @@ export class AuthGuard implements CanActivate {
     
     const request = context.switchToHttp().getRequest();
 
+    console.log('========== AUTH DEBUG ==========');
+    console.log('Authorization:', request.headers.authorization);
+    console.log('isPublic:', isPublic);
+
     const token = this.extractTokenFromHeader(request);
 
+    console.log('Token exists:', !!token);
+    console.log('Token preview:', token ? token.substring(0, 20) + '...' : undefined);
+
     if(!token && !isPublic) {
+        console.log('>>> NO TOKEN');
         throw new UnauthorizedException();
     }
 
     try{
         const jwtConfig = this.configService.get('jwtAuth');
 
+        console.log('jwtConfig exists:', !!jwtConfig);
+        console.log(
+          'jwt secret exists:',
+          !!jwtConfig?.jwtTokenSecret,
+        );
+
         const payload = await this.jwtService.verifyAsync(token!, {
             secret: jwtConfig.jwtTokenSecret,
         });
 
+        console.log('>>> JWT VALID');
+    console.log('Payload:', payload);
+
+
         request['user'] = payload;
-    }catch{
+    }catch(error){
+      console.log('>>> JWT VERIFY ERROR:', error);
+
       if(!isPublic){
          throw new UnauthorizedException();
       }

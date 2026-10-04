@@ -30,7 +30,9 @@ export class InfluxService implements OnModuleDestroy {
       !influxConfig?.org ||
       !influxConfig?.bucket
     ) {
-      throw new Error('Missing InfluxDB environment variables');
+      throw new Error(
+        'Missing InfluxDB environment variables',
+      );
     }
 
     const influxDB = new InfluxDB({
@@ -38,14 +40,12 @@ export class InfluxService implements OnModuleDestroy {
       token: influxConfig.token,
     });
 
-    // Write API
     this.writeApi = influxDB.getWriteApi(
       influxConfig.org,
       influxConfig.bucket,
       's',
     );
 
-    // Query API
     this.queryApi = influxDB.getQueryApi(
       influxConfig.org,
     );
@@ -58,8 +58,14 @@ export class InfluxService implements OnModuleDestroy {
     timestamp: string,
     sensors: SensorsDto,
   ) {
-    for (const [sensor, value] of Object.entries(sensors)) {
-      console.log('Writing sensor:', sensor, value);
+    for (const [sensor, value] of Object.entries(
+      sensors,
+    )) {
+      console.log(
+        'Writing sensor:',
+        sensor,
+        value,
+      );
 
       const point = new Point('sensor_telemetry')
         .tag('bbb_id', bbbId)
@@ -134,19 +140,69 @@ export class InfluxService implements OnModuleDestroy {
   }
 
   async getLatestTelemetry(zoneId: string) {
+  const bucket = this.configService.get<string>('influx.bucket');
+
+  const query = `
+    from(bucket: "${bucket}")
+      |> range(start: -24h)
+      |> filter(fn: (r) =>
+        r._measurement == "sensor_telemetry" and
+        r.zone_id == "${zoneId}"
+      )
+      |> group(columns: ["sensor"])
+      |> last()
+  `;
+
+  const rows: any[] = [];
+
+  await new Promise<void>((resolve, reject) => {
+    this.queryApi.queryRows(query, {
+      next: (row, tableMeta) => {
+        const data = tableMeta.toObject(row);
+
+        rows.push({
+          sensor: data.sensor,
+          value: data._value,
+          timestamp: data._time,
+        });
+      },
+
+      error: reject,
+      complete: resolve,
+    });
+  });
+
+  return rows;
+}
+
+  async getZoneTelemetry(
+    zoneId: string,
+    start = '-24h',
+    stop = 'now()',
+  ) {
     const bucket = this.configService.get<string>(
       'influx.bucket',
     );
 
     const query = `
       from(bucket: "${bucket}")
-        |> range(start: -1h)
+        |> range(
+          start: ${start},
+          stop: ${stop}
+        )
         |> filter(fn: (r) =>
           r._measurement == "sensor_telemetry" and
           r.zone_id == "${zoneId}"
         )
-        |> group(columns: ["sensor"])
-        |> last()
+        |> keep(columns: [
+          "_time",
+          "_value",
+          "sensor",
+          "zone_id",
+          "bbb_id",
+          "esp32_id"
+        ])
+        |> sort(columns: ["_time"])
     `;
 
     const rows: any[] = [];
@@ -160,6 +216,9 @@ export class InfluxService implements OnModuleDestroy {
             sensor: data.sensor,
             value: data._value,
             timestamp: data._time,
+            zoneId: data.zone_id,
+            bbbId: data.bbb_id,
+            esp32Id: data.esp32_id,
           });
         },
 
