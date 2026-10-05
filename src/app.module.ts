@@ -12,6 +12,7 @@ import { BbbModule } from './modules/bbb/bbb.module';
 import { AuthGuard } from './modules/auth/auth.guard';
 import { JwtModule } from '@nestjs/jwt';
 import { ZoneModule } from './modules/zone/zone.module';
+import { FarmModule } from './modules/farm/farm.module';
 
 
 @Module({
@@ -23,6 +24,7 @@ import { ZoneModule } from './modules/zone/zone.module';
     BbbModule,
     JwtModule,
     ZoneModule,
+    FarmModule,
   ],
   controllers: [AppController],
   providers: [
