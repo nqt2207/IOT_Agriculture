@@ -11,6 +11,7 @@ import mqtt, { MqttClient } from 'mqtt';
 
 import { BbbService } from './bbb.service';
 import { TelemetryDto } from './dtos/telemetry.dto';
+import { TelemetryGateway } from './telemetry.gateway';
 
 @Injectable()
 export class MqttTelemetryService
@@ -22,6 +23,7 @@ export class MqttTelemetryService
   constructor(
     private readonly configService: ConfigService,
     private readonly bbbService: BbbService,
+    private readonly telemetryGateway: TelemetryGateway,
   ) {}
 
   onModuleInit() {
@@ -120,6 +122,15 @@ export class MqttTelemetryService
       }
 
       const result = await this.bbbService.receiveTelemetry(bbb, dto);
+
+      // Chỉ phát sự kiện sau khi xử lý telemetry thành công.
+      this.telemetryGateway.emitTelemetryUpdate({
+        bbbId: bbbDeviceId,
+        zoneId: dto.zone_id,
+        esp32Id: dto.esp32_id,
+        timestamp: dto.timestamp,
+        sensors: dto.sensors,
+      });
 
       this.logger.log(
         `Đã xử lý telemetry từ ${bbbDeviceId}: ${JSON.stringify(result)}`,

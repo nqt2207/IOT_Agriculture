@@ -9,6 +9,7 @@ import { InfluxService } from '../influx/influx.service';
 import { Zone } from 'src/databases/entities/zone.entity';
 import { Esp32Device } from 'src/databases/entities/esp32.entity';
 import { MqttTelemetryService } from './mqtt-telemetry.service';
+import { TelemetryGateway } from './telemetry.gateway';
 
 
 @Module({
@@ -25,6 +26,7 @@ import { MqttTelemetryService } from './mqtt-telemetry.service';
     DeviceAuthGuard,
     InfluxService,
     MqttTelemetryService,
+    TelemetryGateway,
   ],
 
   exports: [
