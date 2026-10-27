@@ -19,12 +19,14 @@ import { Public } from 'src/commons/decorators/public.decorator';
 import { User } from 'src/databases/entities/user.entity';
 import { ROLE } from 'src/commons/enums/user.enum';
 import { Roles } from 'src/commons/decorators/role.decorator';
+import { MqttTelemetryService } from './mqtt-telemetry.service';
 
 @Controller('bbb')
 @UseGuards(DeviceAuthGuard)
 export class BbbController {
   constructor(
     private readonly bbbService: BbbService,
+    private readonly mqttTelemetryService: MqttTelemetryService,
   ) {}
 
   @Post('telemetry')
@@ -65,5 +67,12 @@ export class BbbController {
   @Query('zone_id') zoneId: string,
   ) {
   return this.bbbService.getLatestTelemetry(zoneId);
+  }
+
+  
+  @Get('actuators/state')
+  @Public()
+  getActuatorState() {
+    return this.mqttTelemetryService.getActuatorState();
   }
 }
