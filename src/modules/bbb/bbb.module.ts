@@ -10,6 +10,7 @@ import { Zone } from 'src/databases/entities/zone.entity';
 import { Esp32Device } from 'src/databases/entities/esp32.entity';
 import { MqttTelemetryService } from './mqtt-telemetry.service';
 import { TelemetryGateway } from './telemetry.gateway';
+import { ActuatorControlController } from './actuator-control.controller';
 
 
 @Module({
@@ -19,6 +20,7 @@ import { TelemetryGateway } from './telemetry.gateway';
 
   controllers: [
     BbbController,
+    ActuatorControlController,
   ],
 
   providers: [
