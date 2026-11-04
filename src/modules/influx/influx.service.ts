@@ -53,29 +53,41 @@ export class InfluxService implements OnModuleDestroy {
 
   async writeTelemetry(
     bbbId: string,
-    zoneId: string,
+    zoneId: string | null | undefined,
     esp32Id: string,
     timestamp: string,
     sensors: SensorsDto,
   ) {
-    for (const [sensor, value] of Object.entries(
-      sensors,
-    )) {
-      console.log(
-        'Writing sensor:',
-        sensor,
-        value,
-      );
+    const writtenSensors: Record<string, number> = {};
+
+    for (const [sensor, value] of Object.entries(sensors)) {
+      // Bỏ qua các trường không có giá trị hoặc không phải số hợp lệ
+      if (
+        typeof value !== 'number' ||
+        !Number.isFinite(value)
+      ) {
+        continue;
+      }
 
       const point = new Point('sensor_telemetry')
         .tag('bbb_id', bbbId)
-        .tag('zone_id', zoneId)
         .tag('esp32_id', esp32Id)
+        .tag('scope', zoneId ? 'zone' : 'farm')
         .tag('sensor', sensor)
         .floatField('value', value)
         .timestamp(new Date(timestamp));
 
+      // Chỉ thêm zone_id nếu thiết bị thực sự thuộc một Zone
+      if (zoneId) {
+        point.tag('zone_id', zoneId);
+      }
+
       this.writeApi.writePoint(point);
+      writtenSensors[sensor] = value;
+    }
+
+    if (Object.keys(writtenSensors).length === 0) {
+      throw new Error('No valid sensor values to write');
     }
 
     await this.writeApi.flush();
@@ -83,26 +95,33 @@ export class InfluxService implements OnModuleDestroy {
     return {
       message: 'Telemetry written to InfluxDB',
       bbb_id: bbbId,
-      zone_id: zoneId,
+      zone_id: zoneId ?? null,
       esp32_id: esp32Id,
-      sensors,
+      scope: zoneId ? 'zone' : 'farm',
+      sensors: writtenSensors,
       timestamp,
     };
   }
 
   async writeActuatorState(
     bbbId: string,
-    zoneId: string,
+    esp32Id: string,
+    zoneId: string | null | undefined,
     actuator: string,
     value: number,
     timestamp: string,
   ) {
     const point = new Point('actuator_state')
       .tag('bbb_id', bbbId)
-      .tag('zone_id', zoneId)
+      .tag('esp32_id', esp32Id)
       .tag('actuator', actuator)
+      .tag('scope', zoneId ? 'zone' : 'farm')
       .floatField('value', value)
       .timestamp(new Date(timestamp));
+
+    if (zoneId) {
+      point.tag('zone_id', zoneId);
+    }
 
     this.writeApi.writePoint(point);
 
@@ -111,7 +130,8 @@ export class InfluxService implements OnModuleDestroy {
     return {
       message: 'Actuator state written to InfluxDB',
       bbb_id: bbbId,
-      zone_id: zoneId,
+      esp32_id: esp32Id,
+      zone_id: zoneId ?? null,
       actuator,
       value,
       timestamp,

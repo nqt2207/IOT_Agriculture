@@ -3,23 +3,21 @@ import {
   CreateDateColumn,
   Entity,
   JoinColumn,
-  ManyToOne,
+  OneToOne,
   OneToMany,
   PrimaryGeneratedColumn,
 } from 'typeorm';
-import { Zone } from './zone.entity';
+
+import { Farm } from './farms.entity';
 import { Esp32Device } from './esp32.entity';
-import { Actuator } from './actuator.entity';
-
-
 
 @Entity('bbbs')
 export class Bbb {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column()
-  zone_id: number;
+  @Column({ unique: true })
+  farm_id: number;
 
   @Column({ unique: true })
   device_id: string;
@@ -33,15 +31,12 @@ export class Bbb {
   @CreateDateColumn()
   created_at: Date;
 
-  @ManyToOne(() => Zone, (zone) => zone.bbbs, {
+  @OneToOne(() => Farm, (farm) => farm.bbb, {
     onDelete: 'CASCADE',
   })
-  @JoinColumn({ name: 'zone_id' })
-  zone: Zone;
+  @JoinColumn({ name: 'farm_id' })
+  farm: Farm;
 
   @OneToMany(() => Esp32Device, (esp32) => esp32.bbb)
   esp32_devices: Esp32Device[];
-
-  @OneToMany(() => Actuator, (actuator) => actuator.bbb)
-  actuators: Actuator[];
 }

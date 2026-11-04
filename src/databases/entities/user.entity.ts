@@ -7,7 +7,6 @@ import {
 } from 'typeorm';
 import { Farm } from './farms.entity';
 
-
 @Entity('users')
 export class User {
   @PrimaryGeneratedColumn()

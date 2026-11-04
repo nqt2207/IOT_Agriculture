@@ -4,12 +4,13 @@ import {
   Entity,
   JoinColumn,
   ManyToOne,
+  OneToMany,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { Bbb } from './bbb.entity';
 
-
+import { Esp32Device } from './esp32.entity';
+import { ActuatorLog } from './actuator-log.entity';
 
 @Entity('actuators')
 export class Actuator {
@@ -17,13 +18,43 @@ export class Actuator {
   id: number;
 
   @Column()
+  esp32_id: number;
+
+  @Column()
   name: string;
 
   @Column()
   type: string;
 
-  @Column()
-  status: string;
+  @Column({
+    type: 'varchar',
+    default: 'auto',
+  })
+  control_mode: string;
+
+  @Column({
+    type: 'boolean',
+    default: false,
+  })
+  desired_state: boolean;
+
+  @Column({
+    type: 'boolean',
+    nullable: true,
+  })
+  actual_state: boolean | null;
+
+  @Column({
+    type: 'varchar',
+    nullable: true,
+  })
+  reported_control_mode: string | null;
+
+  @Column({
+    type: 'timestamp',
+    nullable: true,
+  })
+  state_updated_at: Date | null;
 
   @CreateDateColumn()
   created_at: Date;
@@ -31,9 +62,12 @@ export class Actuator {
   @UpdateDateColumn()
   updated_at: Date;
 
-  @ManyToOne(() => Bbb, (bbb) => bbb.actuators, {
+  @ManyToOne(() => Esp32Device, (esp32) => esp32.actuators, {
     onDelete: 'CASCADE',
   })
-  @JoinColumn({ name: 'bbb_id' })
-  bbb: Bbb;
+  @JoinColumn({ name: 'esp32_id' })
+  esp32: Esp32Device;
+
+  @OneToMany(() => ActuatorLog, (log) => log.actuator)
+  logs: ActuatorLog[];
 }

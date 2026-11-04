@@ -7,11 +7,9 @@ import {
   OneToMany,
   PrimaryGeneratedColumn,
 } from 'typeorm';
+
 import { Farm } from './farms.entity';
-import { Bbb } from './bbb.entity';
-import { Actuator } from './actuator.entity';
-
-
+import { Esp32Device } from './esp32.entity';
 
 @Entity('zones')
 export class Zone {
@@ -33,7 +31,6 @@ export class Zone {
   @JoinColumn({ name: 'farm_id' })
   farm: Farm;
 
-  @OneToMany(() => Bbb, (bbb) => bbb.zone)
-  bbbs: Bbb[];
-
+  @OneToMany(() => Esp32Device, (esp32) => esp32.zone)
+  esp32_devices: Esp32Device[];
 }

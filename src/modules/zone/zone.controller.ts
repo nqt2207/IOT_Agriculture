@@ -19,34 +19,26 @@ export class ZoneController {
     private readonly zoneService: ZoneService,
   ) {}
 
-  @Roles(ROLE.USER)
   @Get(':zoneId/telemetry/latest')
+  @Roles(ROLE.USER)
   getLatestTelemetry(
     @Param('zoneId') zoneId: string,
     @Req() request: Request,
   ) {
-    console.log('>>> ZONE CONTROLLER CALLED');
-    console.log('>>> ZONE ID:', zoneId);
-    console.log('>>> USER:', request['user']);
-
-    const user = request['user'];
-
     return this.zoneService.getLatestTelemetry(
-      user,
+      request['user'],
       zoneId,
     );
   }
 
-  @Roles(ROLE.USER)
   @Get(':zoneId/telemetry')
+  @Roles(ROLE.USER)
   getTelemetry(
     @Param('zoneId') zoneId: string,
     @Req() request: Request,
   ) {
-    const user = request['user'];
-
     return this.zoneService.getTelemetry(
-      user,
+      request['user'],
       zoneId,
     );
   }

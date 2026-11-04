@@ -15,13 +15,16 @@ import mqtt, { MqttClient } from 'mqtt';
 
 import { BbbService } from './bbb.service';
 import { TelemetryDto } from './dtos/telemetry.dto';
+import { ActuatorStateDto } from './dtos/actuatorState.dto';
 import { TelemetryGateway } from './telemetry.gateway';
 
 @Injectable()
 export class MqttTelemetryService
   implements OnModuleInit, OnModuleDestroy
 {
-  private readonly logger = new Logger(MqttTelemetryService.name);
+  private readonly logger = new Logger(
+    MqttTelemetryService.name,
+  );
 
   private client: MqttClient | undefined;
   private isConnected = false;
@@ -32,21 +35,11 @@ export class MqttTelemetryService
   private readonly actuatorStateTopic =
     'iot/BBB_01/actuator_state';
 
-  private readonly allowedActuators = [
-    'pump1',
-    'fan',
-    'light',
-  ] as const;
-
-  // Trạng thái mô phỏng gần nhất nhận được từ BBB
+  // Trạng thái gần nhất của các actuator
+  // Key có dạng: ESP32_NODE1:pump1
   private actuatorState: Record<string, unknown> = {
     device_id: 'BBB_01',
-    simulation: true,
-    actuators: {
-      pump1: 0,
-      fan: 0,
-      light: 0,
-    },
+    actuators: {},
   };
 
   constructor(
@@ -56,7 +49,7 @@ export class MqttTelemetryService
   ) {}
 
   // =====================================================
-  // INITIALIZE MQTT
+  // 1. INITIALIZE MQTT
   // =====================================================
 
   onModuleInit(): void {
@@ -79,7 +72,7 @@ export class MqttTelemetryService
       !telemetryTopic
     ) {
       this.logger.error(
-        'Thiếu cấu hình MQTT. Kiểm tra các biến môi trường trên Render.',
+        'Thiếu cấu hình MQTT. Kiểm tra các biến môi trường.',
       );
       return;
     }
@@ -121,7 +114,7 @@ export class MqttTelemetryService
           }
 
           this.logger.log(
-            `Đã subscribe các topic MQTT: ${JSON.stringify(granted)}`,
+            `Đã subscribe MQTT: ${JSON.stringify(granted)}`,
           );
         },
       );
@@ -155,7 +148,10 @@ export class MqttTelemetryService
         if (
           receivedTopic === this.actuatorStateTopic
         ) {
-          this.handleActuatorState(rawMessage);
+          void this.handleActuatorState(
+            receivedTopic,
+            rawMessage,
+          );
           return;
         }
 
@@ -169,7 +165,7 @@ export class MqttTelemetryService
   }
 
   // =====================================================
-  // HANDLE TELEMETRY
+  // 2. HANDLE TELEMETRY FROM BBB
   // =====================================================
 
   private async handleMessage(
@@ -178,7 +174,6 @@ export class MqttTelemetryService
     telemetryTopic: string,
   ): Promise<void> {
     try {
-      // Chỉ xử lý topic telemetry đã cấu hình.
       if (topic !== telemetryTopic) {
         this.logger.warn(
           `Bỏ qua topic không được hỗ trợ: ${topic}`,
@@ -188,7 +183,7 @@ export class MqttTelemetryService
 
       const parts = topic.split('/');
 
-      // Topic có dạng: iot/BBB_01/telemetry
+      // Format: iot/BBB_01/telemetry
       if (
         parts.length !== 3 ||
         parts[0] !== 'iot' ||
@@ -225,7 +220,7 @@ export class MqttTelemetryService
 
       if (!bbb) {
         this.logger.warn(
-          `Không tìm thấy BBB có device_id=${bbbDeviceId}`,
+          `Không tìm thấy BBB: ${bbbDeviceId}`,
         );
         return;
       }
@@ -236,17 +231,16 @@ export class MqttTelemetryService
           dto,
         );
 
-      // Phát telemetry sau khi xử lý thành công.
       this.telemetryGateway.emitTelemetryUpdate({
         bbbId: bbbDeviceId,
-        zoneId: dto.zone_id,
+        zoneId: result.zone_id,
         esp32Id: dto.esp32_id,
         timestamp: dto.timestamp,
         sensors: dto.sensors,
       });
 
       this.logger.log(
-        `Đã xử lý telemetry từ ${bbbDeviceId}: ${JSON.stringify(result)}`,
+        `Đã xử lý telemetry: ${JSON.stringify(result)}`,
       );
     } catch (error) {
       const message =
@@ -255,26 +249,29 @@ export class MqttTelemetryService
           : String(error);
 
       this.logger.error(
-        `Xử lý MQTT telemetry thất bại: ${message}`,
+        `Xử lý telemetry thất bại: ${message}`,
       );
     }
   }
 
   // =====================================================
-  // PUBLISH ACTUATOR COMMAND
+  // 3. PUBLISH ACTUATOR COMMAND
   // =====================================================
 
   async publishActuatorCommand(
+    esp32Id: string,
     actuator: string,
     value: number,
   ): Promise<Record<string, unknown>> {
-    if (
-      !this.allowedActuators.includes(
-        actuator as (typeof this.allowedActuators)[number],
-      )
-    ) {
+    if (!esp32Id || !esp32Id.trim()) {
       throw new BadRequestException(
-        `Thiết bị không hợp lệ: ${actuator}`,
+        'esp32_id không được để trống.',
+      );
+    }
+
+    if (!actuator || !actuator.trim()) {
+      throw new BadRequestException(
+        'actuator không được để trống.',
       );
     }
 
@@ -290,14 +287,19 @@ export class MqttTelemetryService
       );
     }
 
-    const payload = JSON.stringify({
-      [actuator]: value,
-    });
+    const payload = {
+      esp32_id: esp32Id,
+      actuator,
+      state: value,
+      timestamp: new Date().toISOString(),
+    };
+
+    const message = JSON.stringify(payload);
 
     return new Promise((resolve, reject) => {
       this.client!.publish(
         this.commandTopic,
-        payload,
+        message,
         { qos: 1 },
         (error) => {
           if (error) {
@@ -315,16 +317,15 @@ export class MqttTelemetryService
           }
 
           this.logger.log(
-            `Đã publish lệnh lên ${this.commandTopic}: ${payload}`,
+            `Đã publish lệnh: ${message}`,
           );
 
           resolve({
             device_id: 'BBB_01',
             topic: this.commandTopic,
-            actuator,
-            command: value,
+            ...payload,
             message:
-              'Lệnh đã được publish lên EMQX Cloud.',
+              'Lệnh đã được gửi tới MQTT broker.',
           });
         },
       );
@@ -332,7 +333,7 @@ export class MqttTelemetryService
   }
 
   // =====================================================
-  // GET ACTUATOR STATE
+  // 4. GET ACTUATOR STATE
   // =====================================================
 
   getActuatorState(): Record<string, unknown> {
@@ -340,81 +341,114 @@ export class MqttTelemetryService
   }
 
   // =====================================================
-  // HANDLE ACTUATOR STATE FROM BBB
+  // 5. HANDLE ACTUATOR STATE FROM BBB
   // =====================================================
 
-  private handleActuatorState(rawMessage: string): void {
+  private async handleActuatorState(
+    topic: string,
+    rawMessage: string,
+  ): Promise<void> {
     try {
-      const data: unknown = JSON.parse(rawMessage);
+      // STEP 1: Validate topic
+      const parts = topic.split('/');
 
+      // Format: iot/BBB_01/actuator_state
       if (
-        typeof data !== 'object' ||
-        data === null ||
-        Array.isArray(data)
+        parts.length !== 3 ||
+        parts[0] !== 'iot' ||
+        parts[2] !== 'actuator_state'
       ) {
         this.logger.warn(
-          'Bỏ qua actuator state không đúng định dạng JSON object.',
+          `Actuator state topic không hợp lệ: ${topic}`,
         );
         return;
       }
 
-      const payload = data as Record<string, unknown>;
+      const bbbDeviceId = parts[1];
 
-      // Hỗ trợ cả hai định dạng:
-      // 1. {"pump1": 1, "pump2": 0, "fan": 0, "light": 0}
-      // 2. {"device_id": "BBB_01", "simulation": true,
-      //     "actuators": {"pump1": 1, "pump2": 0, "fan": 0, "light": 0}}
-      const actuators =
-        typeof payload.actuators === 'object' &&
-        payload.actuators !== null &&
-        !Array.isArray(payload.actuators)
-          ? (payload.actuators as Record<string, unknown>)
-          : payload;
+      // STEP 2: Parse JSON
+      const payload: unknown = JSON.parse(rawMessage);
 
-      const validActuators = [
-        'pump1',
-        'fan',
-        'light',
-      ] as const;
-
-      const normalizedActuators: Record<string, number> = {};
-
-      for (const actuator of validActuators) {
-        const value = actuators[actuator];
-
-        if (value !== 0 && value !== 1) {
-          this.logger.warn(
-            `Trạng thái ${actuator} không hợp lệ: ${String(value)}`,
-          );
-          return;
-        }
-
-        normalizedActuators[actuator] = value;
-      }
-
-      this.actuatorState = {
-        device_id: payload.device_id ?? 'BBB_01',
-        simulation: payload.simulation ?? true,
-        actuators: normalizedActuators,
-      };
-
-      this.logger.log(
-        `Nhận trạng thái thiết bị từ BBB: ${JSON.stringify(this.actuatorState)}`,
+      // STEP 3: Convert to DTO
+      const dto = plainToInstance(
+        ActuatorStateDto,
+        payload,
       );
 
-      this.telemetryGateway.emitActuatorState(this.actuatorState);
+      // STEP 4: Validate DTO
+      const errors = await validate(dto);
+
+      if (errors.length > 0) {
+        this.logger.warn(
+          `Actuator state không hợp lệ: ${JSON.stringify(errors)}`,
+        );
+        return;
+      }
+
+      // STEP 5: Find BBB
+      const bbb =
+        await this.bbbService.findByDeviceId(
+          bbbDeviceId,
+        );
+
+      if (!bbb) {
+        this.logger.warn(
+          `Không tìm thấy BBB: ${bbbDeviceId}`,
+        );
+        return;
+      }
+
+      // STEP 6: Update PostgreSQL and InfluxDB
+      const result =
+        await this.bbbService.receiveActuatorState(
+          bbb,
+          dto,
+        );
+
+      // STEP 7: Update in-memory state
+      const actuatorKey =
+        `${dto.esp32_id}:${dto.actuator}`;
+
+      const currentActuators =
+        this.actuatorState.actuators as Record<
+          string,
+          unknown
+        >;
+
+      currentActuators[actuatorKey] = {
+        esp32_id: dto.esp32_id,
+        actuator: dto.actuator,
+        value: dto.value,
+        timestamp: dto.timestamp,
+      };
+
+      this.actuatorState = {
+        device_id: bbbDeviceId,
+        actuators: currentActuators,
+      };
+
+      // STEP 8: Emit WebSocket event
+      this.telemetryGateway.emitActuatorState({
+        ...result,
+      });
+
+      this.logger.log(
+        `Đã cập nhật actuator state: ${JSON.stringify(result)}`,
+      );
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : String(error);
+        error instanceof Error
+          ? error.message
+          : String(error);
 
       this.logger.error(
-        `Không thể xử lý actuator state: ${message}`,
+        `Xử lý actuator state thất bại: ${message}`,
       );
     }
   }
 
   // =====================================================
-  // DESTROY
+  // 6. DESTROY MQTT
   // =====================================================
 
   onModuleDestroy(): void {
@@ -422,7 +456,9 @@ export class MqttTelemetryService
 
     if (this.client) {
       this.client.end(true);
-      this.logger.log('Đã đóng kết nối MQTT');
+      this.logger.log(
+        'Đã đóng kết nối MQTT.',
+      );
     }
   }
 }

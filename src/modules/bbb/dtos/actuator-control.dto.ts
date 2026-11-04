@@ -1,8 +1,15 @@
-import { IsIn, IsInt, IsString } from 'class-validator';
+
+import {
+  IsIn,
+  IsInt,
+  IsString,
+} from 'class-validator';
 
 export class ActuatorControlDto {
   @IsString()
-  @IsIn(['pump1', 'pump2', 'fan', 'light'])
+  esp32_id: string;
+
+  @IsString()
   actuator: string;
 
   @IsInt()

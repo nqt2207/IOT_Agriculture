@@ -6,9 +6,8 @@ import {
   ManyToOne,
   PrimaryGeneratedColumn,
 } from 'typeorm';
+
 import { Esp32Device } from './esp32.entity';
-
-
 
 @Entity('sensors')
 export class Sensor {

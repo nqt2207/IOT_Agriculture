@@ -34,9 +34,10 @@ export class ActuatorControlController {
     @Body() dto: ActuatorControlDto,
   ) {
     return this.mqttTelemetryService.publishActuatorCommand(
+      dto.esp32_id,
       dto.actuator,
       dto.state,
-    );
+    );  
   }
 
   /**

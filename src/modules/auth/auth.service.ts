@@ -60,7 +60,7 @@ export class AuthService {
             secret: this.configService.get('jwtAuth').jwtRefreshTokenSecret,
         });
 
-        console.log(payloadRefreshToken);
+        
         const userRecord = await this.userRepository.findOneBy({
             id: payloadRefreshToken.id,
         });

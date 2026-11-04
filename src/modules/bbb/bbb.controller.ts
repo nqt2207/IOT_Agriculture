@@ -3,76 +3,90 @@ import {
   Controller,
   Get,
   Post,
-  Query,
   Req,
   UseGuards,
+  UnauthorizedException,
 } from '@nestjs/common';
+
+import {
+  ApiBearerAuth,
+  ApiTags,
+} from '@nestjs/swagger';
+
 import type { Request } from 'express';
 
 import { BbbService } from './bbb.service';
 import { DeviceAuthGuard } from './guards/device-auth.guard';
 
 import { Bbb } from 'src/databases/entities/bbb.entity';
+
 import { TelemetryDto } from './dtos/telemetry.dto';
 import { ActuatorStateDto } from './dtos/actuatorState.dto';
+
 import { Public } from 'src/commons/decorators/public.decorator';
-import { User } from 'src/databases/entities/user.entity';
 import { ROLE } from 'src/commons/enums/user.enum';
 import { Roles } from 'src/commons/decorators/role.decorator';
-import { MqttTelemetryService } from './mqtt-telemetry.service';
 
+@ApiTags('BBB')
 @Controller('bbb')
-@UseGuards(DeviceAuthGuard)
 export class BbbController {
   constructor(
     private readonly bbbService: BbbService,
-    private readonly mqttTelemetryService: MqttTelemetryService,
   ) {}
+
+  // ==========================================
+  // BBB -> BACKEND: RECEIVE TELEMETRY
+  // ==========================================
 
   @Post('telemetry')
   @Public()
+  @UseGuards(DeviceAuthGuard)
   receiveTelemetry(
     @Req() request: Request,
     @Body() dto: TelemetryDto,
   ) {
-    //console.log('>>> CONTROLLER CALLED');
-
-
     const bbb = request['bbb'] as Bbb;
 
-    return this.bbbService.receiveTelemetry(
-      bbb,
-      dto,
-    );
+    return this.bbbService.receiveTelemetry(bbb, dto);
   }
+
+  // ==========================================
+  // BBB -> BACKEND: RECEIVE ACTUATOR STATE
+  // ==========================================
 
   @Post('actuator-state')
   @Public()
+  @UseGuards(DeviceAuthGuard)
   receiveActuatorState(
     @Req() request: Request,
     @Body() dto: ActuatorStateDto,
   ) {
     const bbb = request['bbb'] as Bbb;
 
-    return this.bbbService.receiveActuatorState(
-      bbb,
-      dto,
-    );
+    return this.bbbService.receiveActuatorState(bbb, dto);
   }
 
-  @Get('telemetry/latest')
-  @Public()
-  //@Roles(ROLE.USER)
-  async getLatestTelemetry(
-  @Query('zone_id') zoneId: string,
-  ) {
-  return this.bbbService.getLatestTelemetry(zoneId);
-  }
+  // ==========================================
+  // FRONTEND -> BACKEND: GET ACTUATOR STATES
+  // ==========================================
 
-  
   @Get('actuators/state')
-  @Public()
-  getActuatorState() {
-    return this.mqttTelemetryService.getActuatorState();
+  @ApiBearerAuth()
+  @Roles(ROLE.USER)
+  getActuatorStates(
+    @Req() request: Request,
+  ) {
+    const user = request['user'] as any;
+    const userId = Number(user?.id);
+
+    if (!Number.isInteger(userId) || userId <= 0) {
+      throw new UnauthorizedException(
+        'Invalid user information',
+      );
+    }
+
+    return this.bbbService.getActuatorStatesByUser(
+      userId,
+    );
   }
 }
