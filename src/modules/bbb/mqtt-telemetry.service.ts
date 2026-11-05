@@ -301,7 +301,7 @@ export class MqttTelemetryService
         this.commandTopic,
         message,
         { qos: 1 },
-        (error) => {
+        async (error) => {
           if (error) {
             this.logger.error(
               `Publish lệnh thất bại: ${error.message}`,
@@ -316,17 +316,36 @@ export class MqttTelemetryService
             return;
           }
 
-          this.logger.log(
-            `Đã publish lệnh: ${message}`,
-          );
+          try {
+            // Ghi nhận lệnh sau khi MQTT publish thành công
+            await this.bbbService.recordActuatorCommand(
+              esp32Id,
+              actuator,
+              value,
+            );
 
-          resolve({
-            device_id: 'BBB_01',
-            topic: this.commandTopic,
-            ...payload,
-            message:
-              'Lệnh đã được gửi tới MQTT broker.',
-          });
+            this.logger.log(
+              `Đã publish lệnh: ${message}`,
+            );
+
+            resolve({
+              device_id: 'BBB_01',
+              topic: this.commandTopic,
+              ...payload,
+              message: 'Lệnh đã được gửi và ghi nhận.',
+            });
+          } catch (err) {
+            const errorMessage =
+              err instanceof Error
+                ? err.message
+                : String(err);
+
+            this.logger.error(
+              `Không thể ghi lịch sử lệnh: ${errorMessage}`,
+            );
+
+            reject(err);
+          }
         },
       );
     });

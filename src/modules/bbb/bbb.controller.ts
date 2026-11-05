@@ -4,6 +4,7 @@ import {
   Get,
   Post,
   Req,
+  Query,
   UseGuards,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -89,4 +90,43 @@ export class BbbController {
       userId,
     );
   }
+
+  
+  // ==========================================
+  // FRONTEND -> BACKEND: GET ACTUATOR HISTORY
+  // ==========================================
+
+  @Get('actuators/history')
+  @ApiBearerAuth()
+  @Roles(ROLE.USER)
+  getActuatorHistory(
+    @Req() request: Request,
+    @Query()
+    query: {
+      farm_id?: string;
+      zone_id?: string;
+      esp32_id?: string;
+      actuator?: string;
+      source?: string;
+      from?: string;
+      to?: string;
+      page?: string;
+      limit?: string;
+    },
+  ) {
+    const user = request['user'] as any;
+    const userId = Number(user?.id);
+
+    if (!Number.isInteger(userId) || userId <= 0) {
+      throw new UnauthorizedException(
+        'Invalid user information',
+      );
+    }
+
+    return this.bbbService.getActuatorHistoryByUser(
+      userId,
+      query,
+    );
+  }
+
 }

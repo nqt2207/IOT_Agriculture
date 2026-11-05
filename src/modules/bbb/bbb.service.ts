@@ -273,23 +273,30 @@ export class BbbService {
     }
 
     // 4. Cập nhật trạng thái thực tế
-    actuator.actual_state = dto.value === 1;
+    const previousState = actuator.actual_state;
+    const newState = dto.value === 1;
+
+    actuator.actual_state = newState;
     actuator.state_updated_at = new Date(dto.timestamp);
 
     await this.actuatorRepository.save(actuator);
 
-    // 5. Ghi lịch sử trạng thái
-    const log = this.actuatorLogRepository.create({
-      actuator_id: actuator.id,
-      actuator_name: actuator.name,
-      control_mode: actuator.reported_control_mode ?? actuator.control_mode,
-      commanded_state: actuator.desired_state,
-      actual_state: actuator.actual_state,
-      source: 'system',
-      created_at: new Date(dto.timestamp),
-    });
+    // 5. Chỉ ghi lịch sử khi trạng thái thực tế thay đổi
+    if (previousState !== newState) {
+      const log = this.actuatorLogRepository.create({
+        actuator_id: actuator.id,
+        actuator_name: actuator.name,
+        control_mode:
+          actuator.reported_control_mode ??
+          actuator.control_mode,
+        commanded_state: actuator.desired_state,
+        actual_state: newState,
+        source: 'DEVICE',
+        created_at: new Date(dto.timestamp),
+      });
 
-    await this.actuatorLogRepository.save(log);
+      await this.actuatorLogRepository.save(log);
+    }
 
     // 6. Ghi vào InfluxDB
     await this.influxService.writeActuatorState(
@@ -397,4 +404,303 @@ export class BbbService {
       })),
     };
   }
+
+  // =========================================
+  // 7. RECORD ACTUATOR COMMAND
+  // =========================================
+
+  async recordActuatorCommand(
+    esp32DeviceId: string,
+    actuatorName: string,
+    state: number,
+  ) {
+    const esp32 = await this.esp32Repository.findOne({
+      where: {
+        device_id: esp32DeviceId,
+      },
+    });
+
+    if (!esp32) {
+      throw new BadRequestException(
+        `Không tìm thấy ESP32 '${esp32DeviceId}'`,
+      );
+    }
+
+    const actuator = await this.actuatorRepository.findOne({
+      where: {
+        esp32_id: esp32.id,
+        name: actuatorName,
+      },
+    });
+
+    if (!actuator) {
+      throw new BadRequestException(
+        `Không tìm thấy actuator '${actuatorName}'`,
+      );
+    }
+
+    const commandedState = state === 1;
+
+    actuator.desired_state = commandedState;
+
+    await this.actuatorRepository.save(actuator);
+
+    const log = this.actuatorLogRepository.create({
+      actuator_id: actuator.id,
+      actuator_name: actuator.name,
+      control_mode:
+        actuator.reported_control_mode ??
+        actuator.control_mode,
+      commanded_state: commandedState,
+      actual_state: actuator.actual_state,
+      source: 'USER',
+      created_at: new Date(),
+    });
+
+    await this.actuatorLogRepository.save(log);
+
+    return {
+      actuator: actuator.name,
+      commanded_state: commandedState,
+      message: 'Đã ghi nhận lệnh điều khiển',
+    };
+  }
+
+  
+  async getActuatorHistoryByUser(
+    userId: number,
+    filters: {
+      farm_id?: string;
+      zone_id?: string;
+      esp32_id?: string;
+      actuator?: string;
+      source?: string;
+      from?: string;
+      to?: string;
+      page?: string;
+      limit?: string;
+    },
+  ) {
+    if (!Number.isInteger(userId) || userId <= 0) {
+      throw new UnauthorizedException(
+        'Invalid user information',
+      );
+    }
+
+    // 1. Validate pagination
+    const page = filters.page
+      ? Number(filters.page)
+      : 1;
+
+    const limit = filters.limit
+      ? Number(filters.limit)
+      : 20;
+
+    if (
+      !Number.isInteger(page) ||
+      page < 1 ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 100
+    ) {
+      throw new BadRequestException(
+        'page phải >= 1 và limit phải từ 1 đến 100',
+      );
+    }
+
+    // 2. Validate date filters
+    let fromDate: Date | undefined;
+    let toDate: Date | undefined;
+
+    if (filters.from) {
+      fromDate = new Date(filters.from);
+
+      if (Number.isNaN(fromDate.getTime())) {
+        throw new BadRequestException(
+          'Thời gian from không hợp lệ',
+        );
+      }
+    }
+
+    if (filters.to) {
+      toDate = new Date(filters.to);
+
+      if (Number.isNaN(toDate.getTime())) {
+        throw new BadRequestException(
+          'Thời gian to không hợp lệ',
+        );
+      }
+    }
+
+    if (
+      fromDate &&
+      toDate &&
+      fromDate.getTime() > toDate.getTime()
+    ) {
+      throw new BadRequestException(
+        'from không được lớn hơn to',
+      );
+    }
+
+    // 3. Validate source
+    if (
+      filters.source &&
+      !['USER', 'DEVICE'].includes(
+        filters.source.toUpperCase(),
+      )
+    ) {
+      throw new BadRequestException(
+        'source chỉ được phép là USER hoặc DEVICE',
+      );
+    }
+
+    // 4. Build query
+    const query = this.actuatorLogRepository
+      .createQueryBuilder('log')
+      .innerJoinAndSelect(
+        'log.actuator',
+        'actuator',
+      )
+      .innerJoinAndSelect(
+        'actuator.esp32',
+        'esp32',
+      )
+      .innerJoinAndSelect(
+        'esp32.bbb',
+        'bbb',
+      )
+      .innerJoinAndSelect(
+        'bbb.farm',
+        'farm',
+      )
+      .where('farm.user_id = :userId', {
+        userId,
+      });
+
+    // 5. Apply filters
+
+    if (filters.farm_id) {
+      const farmId = Number(filters.farm_id);
+
+      if (!Number.isInteger(farmId) || farmId <= 0) {
+        throw new BadRequestException(
+          'farm_id không hợp lệ',
+        );
+      }
+
+      query.andWhere('farm.id = :farmId', {
+        farmId,
+      });
+    }
+
+    if (filters.zone_id) {
+      const zoneId = Number(filters.zone_id);
+
+      if (!Number.isInteger(zoneId) || zoneId <= 0) {
+        throw new BadRequestException(
+          'zone_id không hợp lệ',
+        );
+      }
+
+      query.andWhere('esp32.zone_id = :zoneId', {
+        zoneId,
+      });
+    }
+
+    if (filters.esp32_id) {
+      query.andWhere(
+        'esp32.device_id = :esp32Id',
+        {
+          esp32Id: filters.esp32_id,
+        },
+      );
+    }
+
+    if (filters.actuator) {
+      query.andWhere(
+        'actuator.name = :actuatorName',
+        {
+          actuatorName: filters.actuator,
+        },
+      );
+    }
+
+    if (filters.source) {
+      query.andWhere(
+        'log.source = :source',
+        {
+          source: filters.source.toUpperCase(),
+        },
+      );
+    }
+
+    if (fromDate) {
+      query.andWhere(
+        'log.created_at >= :fromDate',
+        { fromDate },
+      );
+    }
+
+    if (toDate) {
+      query.andWhere(
+        'log.created_at <= :toDate',
+        { toDate },
+      );
+    }
+
+    // 6. Pagination and sorting
+    query
+      .orderBy('log.created_at', 'DESC')
+      .addOrderBy('log.id', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit);
+
+    const [logs, total] =
+      await query.getManyAndCount();
+
+    // 7. Format response
+    
+    // 7. Format response
+    return {
+      items: logs
+        .filter(
+          (log) =>
+            log.actuator !== null &&
+            log.actuator !== undefined,
+        )
+        .map((log) => ({
+          id: log.id,
+
+          farm_id: log.actuator!.esp32.bbb.farm.id,
+          farm_name: log.actuator!.esp32.bbb.farm.name,
+
+          bbb_id: log.actuator!.esp32.bbb.device_id,
+
+          esp32_id: log.actuator!.esp32.device_id,
+          scope: log.actuator!.esp32.scope,
+          zone_id:
+            log.actuator!.esp32.zone_id ?? null,
+
+          actuator_id: log.actuator!.id,
+          actuator: log.actuator_name,
+
+          control_mode: log.control_mode,
+
+          commanded_state: log.commanded_state,
+          actual_state: log.actual_state,
+
+          source: log.source,
+          created_at: log.created_at,
+        })),
+
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+
+  }
+
 }
