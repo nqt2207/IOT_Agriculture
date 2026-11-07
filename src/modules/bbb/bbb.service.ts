@@ -275,23 +275,22 @@ export class BbbService {
     // 4. Cập nhật trạng thái thực tế
     const newState = dto.value === 1;
 
-    // 5. Chỉ cập nhật trạng thái thực tế từ ESP32
-    actuator.actual_state = newState;
+    // Lấy thời gian Backend hiện tại
+    const receivedAt = new Date();
 
-    // Sử dụng thời gian Backend nhận phản hồi,
-    // tránh timestamp sai lệch về năm 1970 khi ESP32 chưa đồng bộ NTP.
-    actuator.state_updated_at = new Date();
+    actuator.actual_state = newState;
+    actuator.state_updated_at = receivedAt;
 
     await this.actuatorRepository.save(actuator);
 
-    // 6. Ghi vào InfluxDB
+    // 5. Ghi vào InfluxDB bằng timestamp Backend
     await this.influxService.writeActuatorState(
       bbb.device_id,
       dto.esp32_id,
       zoneId,
       dto.actuator,
       dto.value,
-      dto.timestamp,
+      receivedAt.toISOString(),
     );
 
     return {
@@ -301,7 +300,7 @@ export class BbbService {
       zone_id: zoneId,
       actuator: dto.actuator,
       value: dto.value,
-      timestamp: dto.timestamp,
+      timestamp: receivedAt.toISOString(),
     };
   }
 
