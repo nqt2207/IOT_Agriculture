@@ -273,30 +273,16 @@ export class BbbService {
     }
 
     // 4. Cập nhật trạng thái thực tế
-    const previousState = actuator.actual_state;
     const newState = dto.value === 1;
 
+    // 5. Chỉ cập nhật trạng thái thực tế từ ESP32
     actuator.actual_state = newState;
-    actuator.state_updated_at = new Date(dto.timestamp);
+
+    // Sử dụng thời gian Backend nhận phản hồi,
+    // tránh timestamp sai lệch về năm 1970 khi ESP32 chưa đồng bộ NTP.
+    actuator.state_updated_at = new Date();
 
     await this.actuatorRepository.save(actuator);
-
-    // 5. Chỉ ghi lịch sử khi trạng thái thực tế thay đổi
-    if (previousState !== newState) {
-      const log = this.actuatorLogRepository.create({
-        actuator_id: actuator.id,
-        actuator_name: actuator.name,
-        control_mode:
-          actuator.reported_control_mode ??
-          actuator.control_mode,
-        commanded_state: actuator.desired_state,
-        actual_state: newState,
-        source: 'DEVICE',
-        created_at: new Date(dto.timestamp),
-      });
-
-      await this.actuatorLogRepository.save(log);
-    }
 
     // 6. Ghi vào InfluxDB
     await this.influxService.writeActuatorState(
