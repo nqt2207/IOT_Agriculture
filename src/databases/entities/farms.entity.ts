@@ -1,3 +1,4 @@
+
 import {
   Column,
   CreateDateColumn,
@@ -23,6 +24,21 @@ export class Farm {
 
   @Column()
   name: string;
+
+  // 0 = AVAILABLE, 1 = EMPTY, null = UNKNOWN
+  @Column({
+    type: 'smallint',
+    nullable: true,
+    default: null,
+  })
+  tank_status: number | null;
+
+  @Column({
+    type: 'timestamptz',
+    nullable: true,
+    default: null,
+  })
+  tank_status_updated_at: Date | null;
 
   @CreateDateColumn()
   created_at: Date;

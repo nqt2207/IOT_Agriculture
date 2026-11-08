@@ -36,7 +36,7 @@ export class MqttTelemetryService
     'iot/BBB_01/actuator_state';
 
   // Trạng thái gần nhất của các actuator
-  // Key có dạng: ESP32_NODE1:pump1
+  // Key: ESP32_NODE1:pump1
   private actuatorState: Record<string, unknown> = {
     device_id: 'BBB_01',
     actuators: {},
@@ -63,7 +63,9 @@ export class MqttTelemetryService
       this.configService.get<string>('MQTT_PASSWORD');
 
     const telemetryTopic =
-      this.configService.get<string>('MQTT_TELEMETRY_TOPIC');
+      this.configService.get<string>(
+        'MQTT_TELEMETRY_TOPIC',
+      );
 
     if (
       !brokerUrl ||
@@ -174,6 +176,7 @@ export class MqttTelemetryService
     telemetryTopic: string,
   ): Promise<void> {
     try {
+      // STEP 1: Validate topic
       if (topic !== telemetryTopic) {
         this.logger.warn(
           `Bỏ qua topic không được hỗ trợ: ${topic}`,
@@ -197,13 +200,16 @@ export class MqttTelemetryService
 
       const bbbDeviceId = parts[1];
 
+      // STEP 2: Parse JSON
       const payload: unknown = JSON.parse(rawMessage);
 
+      // STEP 3: Convert to DTO
       const dto = plainToInstance(
         TelemetryDto,
         payload,
       );
 
+      // STEP 4: Validate DTO
       const errors = await validate(dto);
 
       if (errors.length > 0) {
@@ -213,6 +219,7 @@ export class MqttTelemetryService
         return;
       }
 
+      // STEP 5: Find BBB
       const bbb =
         await this.bbbService.findByDeviceId(
           bbbDeviceId,
@@ -225,12 +232,17 @@ export class MqttTelemetryService
         return;
       }
 
+      // STEP 6: Process telemetry
+      // BbbService xử lý scope, kiểm tra ESP32,
+      // ghi InfluxDB và cập nhật tank_status vào Farm.
       const result =
         await this.bbbService.receiveTelemetry(
           bbb,
           dto,
         );
 
+      // STEP 7: Emit telemetry:update
+      // Node1, Node2 và Node3 vẫn sử dụng event này.
       this.telemetryGateway.emitTelemetryUpdate({
         bbbId: bbbDeviceId,
         zoneId: result.zone_id,
@@ -238,6 +250,45 @@ export class MqttTelemetryService
         timestamp: dto.timestamp,
         sensors: dto.sensors,
       });
+
+      // STEP 8: Emit tank:status for Node3
+      // Quy ước:
+      // 0 = AVAILABLE (còn nước)
+      // 1 = EMPTY (bể cạn)
+      // null = UNKNOWN (chưa nhận dữ liệu)
+
+      if (
+        dto.esp32_id === 'ESP32_NODE3' &&
+        result.scope === 'farm' &&
+        result.zone_id == null &&
+        (
+          dto.sensors.tank_status === 0 ||
+          dto.sensors.tank_status === 1
+        )
+      ) {
+        this.telemetryGateway.emitTankStatusUpdate({
+          bbbId: bbbDeviceId,
+          farmId: bbb.farm_id,
+          esp32Id: dto.esp32_id,
+
+          tank_status: dto.sensors.tank_status,
+
+          status:
+            dto.sensors.tank_status === 0
+              ? 'AVAILABLE'
+              : 'EMPTY',
+
+          timestamp: dto.timestamp,
+        });
+
+        this.logger.log(
+          `Cập nhật tank status: Farm ${bbb.farm_id} - ${
+            dto.sensors.tank_status === 0
+              ? 'AVAILABLE'
+              : 'EMPTY'
+          }`,
+        );
+      }
 
       this.logger.log(
         `Đã xử lý telemetry: ${JSON.stringify(result)}`,
@@ -258,7 +309,6 @@ export class MqttTelemetryService
   // 3. PUBLISH ACTUATOR COMMAND
   // =====================================================
 
-  
   async publishActuatorCommand(
     esp32Id: string,
     actuator: string,
@@ -290,14 +340,13 @@ export class MqttTelemetryService
       );
     }
 
-    // STEP 1: Tạo lịch sử trước khi publish.
-    // ID của ActuatorLog sẽ được dùng làm command_id.
-
-    const command = await this.bbbService.recordActuatorCommand(
-      esp32Id,
-      actuator,
-      value,
-    );
+    // STEP 1: Record command before publishing.
+    const command =
+      await this.bbbService.recordActuatorCommand(
+        esp32Id,
+        actuator,
+        value,
+      );
 
     const payload = {
       esp32_id: esp32Id,
@@ -309,8 +358,7 @@ export class MqttTelemetryService
 
     const message = JSON.stringify(payload);
 
-    // STEP 2: Publish lệnh lên EMQX Cloud.
-
+    // STEP 2: Publish command to EMQX Cloud.
     return new Promise((resolve, reject) => {
       try {
         mqttClient.publish(
@@ -323,10 +371,7 @@ export class MqttTelemetryService
                 `Publish lệnh thất bại: ${error.message}. command_id=${command.command_id}`,
               );
 
-              // Giữ lại log với actual_state = null.
-              // Đây là lệnh đã được ghi nhận nhưng chưa có xác nhận
-              // từ ESP32. Không tự xóa lịch sử.
-
+              // Giữ lại lịch sử lệnh chưa được xác nhận.
               reject(
                 new ServiceUnavailableException(
                   'Không thể publish lệnh lên MQTT. Lệnh chưa được xác nhận bởi thiết bị.',
@@ -367,7 +412,6 @@ export class MqttTelemetryService
       }
     });
   }
-
 
   // =====================================================
   // 4. GET ACTUATOR STATE
@@ -493,6 +537,7 @@ export class MqttTelemetryService
 
     if (this.client) {
       this.client.end(true);
+
       this.logger.log(
         'Đã đóng kết nối MQTT.',
       );

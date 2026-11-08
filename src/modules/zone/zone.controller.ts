@@ -42,4 +42,16 @@ export class ZoneController {
       zoneId,
     );
   }
+
+  @Get(':zoneId/tank-status')
+  @Roles(ROLE.USER)
+  getTankStatus(
+    @Param('zoneId') zoneId: string,
+    @Req() request: Request,
+  ) {
+    return this.zoneService.getTankStatus(
+      request['user'],
+      zoneId,
+    );
+  }
 }

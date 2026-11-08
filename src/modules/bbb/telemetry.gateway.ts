@@ -27,4 +27,8 @@ export class TelemetryGateway {
   emitActuatorState(data: unknown): void {
     this.server.emit('actuator:state', data);
   }
+
+  emitTankStatusUpdate(data: unknown): void {
+    this.server.emit('tank:status', data);
+  }
 }

@@ -16,6 +16,7 @@ import { InfluxService } from '../influx/influx.service';
 import { MqttTelemetryService } from './mqtt-telemetry.service';
 import { TelemetryGateway } from './telemetry.gateway';
 import { ActuatorControlController } from './actuator-control.controller';
+import { Farm } from 'src/databases/entities/farms.entity';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { ActuatorControlController } from './actuator-control.controller';
       Zone,
       Actuator,
       ActuatorLog,
+      Farm,
     ]),
   ],
 

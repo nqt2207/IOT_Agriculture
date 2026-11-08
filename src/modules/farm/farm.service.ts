@@ -1,17 +1,9 @@
-import {
-  Injectable,
-} from '@nestjs/common';
 
-import {
-  InjectRepository,
-} from '@nestjs/typeorm';
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+
 import { Farm } from 'src/databases/entities/farms.entity';
-
-import {
-  Repository,
-} from 'typeorm';
-
-
 
 @Injectable()
 export class FarmService {
@@ -49,6 +41,11 @@ export class FarmService {
       return null;
     }
 
-    return farm.zones;
+    // Trạng thái bể thuộc Farm, được chia sẻ cho tất cả Zone.
+    return farm.zones.map((zone) => ({
+      ...zone,
+      tank_status: farm.tank_status,
+      tank_status_updated_at: farm.tank_status_updated_at,
+    }));
   }
 }

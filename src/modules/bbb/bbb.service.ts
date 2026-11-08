@@ -19,6 +19,8 @@ import { Actuator } from 'src/databases/entities/actuator.entity';
 import { ActuatorLog } from 'src/databases/entities/actuator-log.entity';
 import { InfluxService } from '../influx/influx.service';
 
+import { Farm } from 'src/databases/entities/farms.entity';
+
 @Injectable()
 export class BbbService {
   constructor(
@@ -38,6 +40,9 @@ export class BbbService {
 
     @InjectRepository(ActuatorLog)
     private readonly actuatorLogRepository: Repository<ActuatorLog>,
+
+    @InjectRepository(Farm)
+    private readonly farmRepository: Repository<Farm>,
   ) {}
 
   // =========================================
@@ -183,6 +188,59 @@ export class BbbService {
       dto.timestamp,
       dto.sensors,
     );
+
+    // =========================================
+    // UPDATE FARM TANK STATUS FROM NODE3
+    // =========================================
+
+    if (dto.sensors.tank_status !== undefined) {
+      // Chỉ ESP32_NODE3 được phép gửi trạng thái bể nước.
+      if (
+        esp32.device_id !== 'ESP32_NODE3' ||
+        esp32.scope !== 'farm'
+      ) {
+        throw new BadRequestException(
+          'Only farm-level ESP32_NODE3 can update tank_status',
+        );
+      }
+
+      const tankStatus = dto.sensors.tank_status;
+
+      // 0 = AVAILABLE, 1 = EMPTY
+      if (tankStatus !== 0 && tankStatus !== 1) {
+        throw new BadRequestException(
+          'tank_status must be 0 (AVAILABLE) or 1 (EMPTY)',
+        );
+      }
+
+      const updatedAt = new Date(dto.timestamp);
+
+      if (Number.isNaN(updatedAt.getTime())) {
+        throw new BadRequestException(
+          'Invalid tank_status timestamp',
+        );
+      }
+
+      const result = await this.farmRepository.update(
+        { id: Number(bbb.farm_id) },
+        {
+          tank_status: tankStatus,
+          tank_status_updated_at: updatedAt,
+        },
+      );
+
+      if (!result.affected) {
+        throw new BadRequestException(
+          `Farm '${bbb.farm_id}' not found`,
+        );
+      }
+
+      console.log(
+        `Tank status updated: Farm=${bbb.farm_id} | ${
+          tankStatus === 0 ? 'AVAILABLE' : 'EMPTY'
+        }`,
+      );
+    }
 
     console.log(
       `Telemetry saved: ${dto.esp32_id} | scope=${esp32.scope} | zone=${zoneId}`,
@@ -507,6 +565,55 @@ export class BbbService {
       throw new BadRequestException(
         `Không tìm thấy actuator '${actuatorName}'`,
       );
+    }
+
+    // =========================================
+    // PUMP SAFETY: CHECK FARM TANK STATUS
+    // =========================================
+
+    // Chỉ kiểm tra khi có lệnh bật một actuator loại pump.
+    // Lệnh tắt bơm luôn được phép.
+
+    if (actuator.type === 'pump' && state === 1) {
+      // Tìm BBB quản lý ESP32 này.
+      const bbb = await this.bbbRepository.findOne({
+        where: {
+          id: Number(esp32.bbb_id),
+        },
+      });
+
+      if (!bbb) {
+        throw new BadRequestException(
+          'Cannot verify Farm information for pump safety',
+        );
+      }
+
+      // Lấy trạng thái bể nước từ Farm.
+      const farm = await this.farmRepository.findOne({
+        where: {
+          id: Number(bbb.farm_id),
+        },
+        select: {
+          id: true,
+          tank_status: true,
+        },
+      });
+
+      if (!farm) {
+        throw new BadRequestException(
+          'Cannot verify tank status: Farm not found',
+        );
+      }
+
+      // Chỉ tank_status = 0 mới được phép bật bơm.
+      // 1 = EMPTY, null = UNKNOWN.
+      if (farm.tank_status !== 0) {
+        throw new BadRequestException(
+          farm.tank_status === 1
+            ? 'Cannot turn on pump: water tank is EMPTY'
+            : 'Cannot turn on pump: tank status is UNKNOWN',
+        );
+      }
     }
 
     // STEP 3: Xác định trạng thái được yêu cầu

@@ -1,6 +1,8 @@
+
 import {
   IsDefined,
   IsISO8601,
+  IsIn,
   IsNumber,
   IsObject,
   IsOptional,
@@ -35,8 +37,9 @@ export class SensorsDto {
   @IsNumber()
   water_volume?: number;
 
+  // 0 = AVAILABLE, 1 = EMPTY
   @IsOptional()
-  @IsNumber()
+  @IsIn([0, 1])
   tank_status?: number;
 }
 

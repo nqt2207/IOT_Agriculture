@@ -1,3 +1,4 @@
+
 import {
   Injectable,
   NotFoundException,
@@ -27,12 +28,7 @@ export class ZoneService {
     user: any,
     zoneId: string,
   ): Promise<Zone> {
-    // 1. Lấy user ID từ JWT payload
-    const userId = Number(user?.id);
-
-    if (!Number.isInteger(userId) || userId <= 0) {
-      throw new UnauthorizedException('Invalid user information');
-    }
+    const userId = Number(user?.id ?? user?.sub);
 
     if (!Number.isInteger(userId) || userId <= 0) {
       throw new UnauthorizedException(
@@ -40,7 +36,6 @@ export class ZoneService {
       );
     }
 
-    // 2. Kiểm tra zone ID
     const parsedZoneId = Number(zoneId);
 
     if (
@@ -50,7 +45,6 @@ export class ZoneService {
       throw new NotFoundException('Zone not found');
     }
 
-    // 3. Tìm Zone và Farm sở hữu Zone đó
     const zone = await this.zoneRepository.findOne({
       where: {
         id: parsedZoneId,
@@ -64,13 +58,39 @@ export class ZoneService {
       throw new NotFoundException('Zone not found');
     }
 
-    // 4. Kiểm tra quyền sở hữu Farm
-    if (zone.farm.user_id !== userId) {
-      // Không tiết lộ Zone có tồn tại hay không
+    if (Number(zone.farm.user_id) !== userId) {
       throw new NotFoundException('Zone not found');
     }
 
     return zone;
+  }
+
+  // ==========================================
+  // GET TANK STATUS FROM FARM
+  // ==========================================
+
+  async getTankStatus(
+    user: any,
+    zoneId: string,
+  ) {
+    const zone = await this.validateZoneAccess(
+      user,
+      zoneId,
+    );
+
+    return {
+      farm_id: zone.farm.id,
+      zone_id: zone.id,
+      tank_status: zone.farm.tank_status ?? null,
+      tank_status_updated_at:
+        zone.farm.tank_status_updated_at ?? null,
+      status:
+        zone.farm.tank_status === 0
+          ? 'AVAILABLE'
+          : zone.farm.tank_status === 1
+            ? 'EMPTY'
+            : 'UNKNOWN',
+    };
   }
 
   // ==========================================

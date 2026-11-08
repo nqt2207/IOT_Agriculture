@@ -1,3 +1,4 @@
+
 import {
   Controller,
   Get,
@@ -7,10 +8,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import {
-  ApiBearerAuth,
-} from '@nestjs/swagger';
-
+import { ApiBearerAuth } from '@nestjs/swagger';
 import type { Request } from 'express';
 
 import { FarmService } from './farm.service';
@@ -27,7 +25,6 @@ export class FarmController {
     @Req() request: Request,
   ) {
     const user = request['user'] as any;
-
     const userId = user?.id ?? user?.sub;
 
     return this.farmService.getMyFarms(userId);
@@ -39,7 +36,6 @@ export class FarmController {
     @Req() request: Request,
   ) {
     const user = request['user'] as any;
-
     const userId = user?.id ?? user?.sub;
 
     const zones = await this.farmService.getZonesByFarm(
@@ -48,9 +44,7 @@ export class FarmController {
     );
 
     if (!zones) {
-      throw new NotFoundException(
-        'Farm not found',
-      );
+      throw new NotFoundException('Farm not found');
     }
 
     return zones;
