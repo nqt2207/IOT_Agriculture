@@ -395,10 +395,16 @@ export class BbbService {
   // =========================================
 
   async recordActuatorCommand(
-    esp32DeviceId: string,
-    actuatorName: string,
-    state: number,
+  esp32DeviceId: string,
+  actuatorName: string,
+  state: number,
   ) {
+    if (state !== 0 && state !== 1) {
+      throw new BadRequestException(
+        'State chỉ được phép là 0 hoặc 1',
+      );
+    }
+
     const esp32 = await this.esp32Repository.findOne({
       where: {
         device_id: esp32DeviceId,
@@ -426,10 +432,12 @@ export class BbbService {
 
     const commandedState = state === 1;
 
+    // Cập nhật trạng thái mong muốn
     actuator.desired_state = commandedState;
 
     await this.actuatorRepository.save(actuator);
 
+    // Tạo lịch sử USER, chờ ESP32 xác nhận actual_state
     const log = this.actuatorLogRepository.create({
       actuator_id: actuator.id,
       actuator_name: actuator.name,
@@ -437,7 +445,7 @@ export class BbbService {
         actuator.reported_control_mode ??
         actuator.control_mode,
       commanded_state: commandedState,
-      actual_state: actuator.actual_state,
+      actual_state: null,
       source: 'USER',
       created_at: new Date(),
     });
