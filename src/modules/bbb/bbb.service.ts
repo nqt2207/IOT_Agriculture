@@ -441,9 +441,10 @@ export class BbbService {
     const log = this.actuatorLogRepository.create({
       actuator_id: actuator.id,
       actuator_name: actuator.name,
-      control_mode:
-        actuator.reported_control_mode ??
-        actuator.control_mode,
+
+      // Lệnh từ Frontend luôn là MANUAL
+      control_mode: 'manual',
+
       commanded_state: commandedState,
       actual_state: null,
       source: 'USER',
