@@ -258,6 +258,7 @@ export class MqttTelemetryService
   // 3. PUBLISH ACTUATOR COMMAND
   // =====================================================
 
+  
   async publishActuatorCommand(
     esp32Id: string,
     actuator: string,
@@ -281,75 +282,92 @@ export class MqttTelemetryService
       );
     }
 
-    if (!this.client || !this.isConnected) {
+    const mqttClient = this.client;
+
+    if (!mqttClient || !this.isConnected) {
       throw new ServiceUnavailableException(
         'Backend chưa kết nối EMQX Cloud.',
       );
     }
 
+    // STEP 1: Tạo lịch sử trước khi publish.
+    // ID của ActuatorLog sẽ được dùng làm command_id.
+
+    const command = await this.bbbService.recordActuatorCommand(
+      esp32Id,
+      actuator,
+      value,
+    );
+
     const payload = {
       esp32_id: esp32Id,
       actuator,
       state: value,
+      command_id: command.command_id,
       timestamp: new Date().toISOString(),
     };
 
     const message = JSON.stringify(payload);
 
+    // STEP 2: Publish lệnh lên EMQX Cloud.
+
     return new Promise((resolve, reject) => {
-      this.client!.publish(
-        this.commandTopic,
-        message,
-        { qos: 1 },
-        async (error) => {
-          if (error) {
-            this.logger.error(
-              `Publish lệnh thất bại: ${error.message}`,
-            );
+      try {
+        mqttClient.publish(
+          this.commandTopic,
+          message,
+          { qos: 1, retain: false },
+          (error) => {
+            if (error) {
+              this.logger.error(
+                `Publish lệnh thất bại: ${error.message}. command_id=${command.command_id}`,
+              );
 
-            reject(
-              new ServiceUnavailableException(
-                'Không thể gửi lệnh điều khiển.',
-              ),
-            );
+              // Giữ lại log với actual_state = null.
+              // Đây là lệnh đã được ghi nhận nhưng chưa có xác nhận
+              // từ ESP32. Không tự xóa lịch sử.
 
-            return;
-          }
+              reject(
+                new ServiceUnavailableException(
+                  'Không thể publish lệnh lên MQTT. Lệnh chưa được xác nhận bởi thiết bị.',
+                ),
+              );
 
-          try {
-            // Ghi nhận lệnh sau khi MQTT publish thành công
-            await this.bbbService.recordActuatorCommand(
-              esp32Id,
-              actuator,
-              value,
-            );
+              return;
+            }
 
             this.logger.log(
-              `Đã publish lệnh: ${message}`,
+              `Đã publish actuator command: ${message}`,
             );
 
             resolve({
               device_id: 'BBB_01',
               topic: this.commandTopic,
               ...payload,
-              message: 'Lệnh đã được gửi và ghi nhận.',
+              message:
+                'Lệnh đã được publish lên MQTT. Đang chờ ESP32 xác nhận.',
             });
-          } catch (err) {
-            const errorMessage =
-              err instanceof Error
-                ? err.message
-                : String(err);
+          },
+        );
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error
+            ? error.message
+            : String(error);
 
-            this.logger.error(
-              `Không thể ghi lịch sử lệnh: ${errorMessage}`,
-            );
+        this.logger.error(
+          `Publish MQTT exception: ${errorMessage}`,
+        );
 
-            reject(err);
-          }
-        },
-      );
+        reject(
+          new ServiceUnavailableException(
+            'Có lỗi khi gửi lệnh điều khiển qua MQTT.',
+          ),
+        );
+      }
     });
   }
+
 
   // =====================================================
   // 4. GET ACTUATOR STATE

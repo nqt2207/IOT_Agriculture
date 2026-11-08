@@ -202,13 +202,15 @@ export class BbbService {
   // 3. RECEIVE ACTUATOR STATE
   // =========================================
 
+  
   async receiveActuatorState(
     bbb: Bbb,
     dto: ActuatorStateDto,
   ) {
     console.log('Actuator state from:', bbb.device_id);
 
-    // 1. Tìm ESP32 thuộc BBB
+    // STEP 1: Tìm ESP32 thuộc BBB
+
     const esp32 = await this.esp32Repository.findOne({
       where: {
         bbb_id: Number(bbb.id),
@@ -222,7 +224,8 @@ export class BbbService {
       );
     }
 
-    // 2. Kiểm tra scope và xác định Zone
+    // STEP 2: Kiểm tra scope và xác định Zone
+
     let zoneId: string | null = null;
 
     if (esp32.scope === 'zone') {
@@ -247,7 +250,10 @@ export class BbbService {
 
       zoneId = String(zone.id);
     } else if (esp32.scope === 'farm') {
-      if (esp32.zone_id !== null && esp32.zone_id !== undefined) {
+      if (
+        esp32.zone_id !== null &&
+        esp32.zone_id !== undefined
+      ) {
         throw new BadRequestException(
           `Farm-level ESP32 '${dto.esp32_id}' must not have a zone`,
         );
@@ -258,7 +264,8 @@ export class BbbService {
       );
     }
 
-    // 3. Tìm actuator trong PostgreSQL
+    // STEP 3: Tìm actuator
+
     const actuator = await this.actuatorRepository.findOne({
       where: {
         esp32_id: esp32.id,
@@ -272,18 +279,81 @@ export class BbbService {
       );
     }
 
-    // 4. Cập nhật trạng thái thực tế
-    const newState = dto.value === 1;
+    // STEP 4: Xác định trạng thái phản hồi
 
-    // Lấy thời gian Backend hiện tại
+    const newState = dto.value === 1;
     const receivedAt = new Date();
+
+    // STEP 5: Cập nhật actual_state hiện tại
 
     actuator.actual_state = newState;
     actuator.state_updated_at = receivedAt;
 
     await this.actuatorRepository.save(actuator);
 
-    // 5. Ghi vào InfluxDB bằng timestamp Backend
+    // STEP 6: Nếu có command_id, cập nhật đúng lịch sử USER
+
+    if (dto.command_id !== undefined) {
+      const commandLog =
+        await this.actuatorLogRepository.findOne({
+          where: {
+            id: dto.command_id,
+            actuator_id: actuator.id,
+            actuator_name: dto.actuator,
+            source: 'USER',
+          },
+        });
+
+      if (!commandLog) {
+        // Không tìm thấy log tương ứng.
+        // Không được cập nhật một log khác để thay thế.
+
+        console.warn(
+          `Không tìm thấy USER log cho command_id=${dto.command_id}, actuator=${dto.actuator}`,
+        );
+      } else if (
+        commandLog.commanded_state !== newState
+      ) {
+        // Phản hồi không khớp với trạng thái đã yêu cầu.
+
+        console.warn(
+          `State mismatch: command_id=${dto.command_id}, commanded=${commandLog.commanded_state}, received=${newState}`,
+        );
+      } else if (
+        commandLog.actual_state === null ||
+        commandLog.actual_state === undefined
+      ) {
+        // Chỉ cập nhật khi log chưa có phản hồi.
+
+        commandLog.actual_state = newState;
+
+        await this.actuatorLogRepository.save(
+          commandLog,
+        );
+
+        console.log(
+          `Đã xác nhận USER command: command_id=${dto.command_id}, actual_state=${newState}`,
+        );
+      } else if (
+        commandLog.actual_state === newState
+      ) {
+        // Phản hồi trùng lặp: không ghi đè, không tạo log mới.
+
+        console.log(
+          `Bỏ qua ACK trùng lặp: command_id=${dto.command_id}`,
+        );
+      } else {
+        // Bản ghi đã được xác nhận với trạng thái khác.
+        // Không ghi đè kết quả đã xác nhận.
+
+        console.warn(
+          `Command đã có kết quả khác trước đó: command_id=${dto.command_id}`,
+        );
+      }
+    }
+
+    // STEP 7: Ghi trạng thái vào InfluxDB
+
     await this.influxService.writeActuatorState(
       bbb.device_id,
       dto.esp32_id,
@@ -293,6 +363,8 @@ export class BbbService {
       receivedAt.toISOString(),
     );
 
+    // STEP 8: Trả kết quả
+
     return {
       message: 'Actuator state received',
       device_id: bbb.device_id,
@@ -300,9 +372,11 @@ export class BbbService {
       zone_id: zoneId,
       actuator: dto.actuator,
       value: dto.value,
+      command_id: dto.command_id ?? null,
       timestamp: receivedAt.toISOString(),
     };
   }
+
 
   // =========================================
   // 4. GET LATEST TELEMETRY BY ZONE
@@ -394,16 +468,19 @@ export class BbbService {
   // 7. RECORD ACTUATOR COMMAND
   // =========================================
 
+  
   async recordActuatorCommand(
-  esp32DeviceId: string,
-  actuatorName: string,
-  state: number,
+    esp32DeviceId: string,
+    actuatorName: string,
+    state: number,
   ) {
     if (state !== 0 && state !== 1) {
       throw new BadRequestException(
         'State chỉ được phép là 0 hoặc 1',
       );
     }
+
+    // STEP 1: Tìm ESP32
 
     const esp32 = await this.esp32Repository.findOne({
       where: {
@@ -416,6 +493,8 @@ export class BbbService {
         `Không tìm thấy ESP32 '${esp32DeviceId}'`,
       );
     }
+
+    // STEP 2: Tìm actuator thuộc ESP32
 
     const actuator = await this.actuatorRepository.findOne({
       where: {
@@ -430,35 +509,42 @@ export class BbbService {
       );
     }
 
+    // STEP 3: Xác định trạng thái được yêu cầu
+
     const commandedState = state === 1;
 
-    // Cập nhật trạng thái mong muốn
+    // STEP 4: Cập nhật desired_state
+
     actuator.desired_state = commandedState;
 
     await this.actuatorRepository.save(actuator);
 
-    // Tạo lịch sử USER, chờ ESP32 xác nhận actual_state
+    // STEP 5: Tạo lịch sử MANUAL
+    // actual_state = null vì ESP32 chưa xác nhận.
+
     const log = this.actuatorLogRepository.create({
       actuator_id: actuator.id,
       actuator_name: actuator.name,
-
-      // Lệnh từ Frontend luôn là MANUAL
       control_mode: 'manual',
-
       commanded_state: commandedState,
       actual_state: null,
       source: 'USER',
       created_at: new Date(),
     });
 
-    await this.actuatorLogRepository.save(log);
+    const savedLog =
+      await this.actuatorLogRepository.save(log);
+
+    // STEP 6: Trả ID để MqttTelemetryService đưa vào MQTT.
 
     return {
+      command_id: savedLog.id,
       actuator: actuator.name,
       commanded_state: commandedState,
       message: 'Đã ghi nhận lệnh điều khiển',
     };
   }
+
 
   
   async getActuatorHistoryByUser(
