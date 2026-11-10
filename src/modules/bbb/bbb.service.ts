@@ -186,7 +186,7 @@ export class BbbService {
 
       const tankStatus = dto.sensors.tank_status;
 
-      // 0 = AVAILABLE, 1 = EMPTY
+      // 1 = AVAILABLE, 0 = EMPTY
 
       if (tankStatus !== 0 && tankStatus !== 1) {
         throw new BadRequestException(
@@ -218,7 +218,7 @@ export class BbbService {
 
       console.log(
         `Tank status updated: Farm=${bbb.farm_id} | ${
-          tankStatus === 0 ? 'AVAILABLE' : 'EMPTY'
+          tankStatus === 0 ? 'EMPTY' : 'AVAILABLE'
         }`,
       );
     }
@@ -801,7 +801,7 @@ export class BbbService {
 
       if (farm.tank_status !== 0) {
         throw new BadRequestException(
-          farm.tank_status === 1
+          farm.tank_status === 0
             ? 'Cannot turn on pump: water tank is EMPTY'
             : 'Cannot turn on pump: tank status is UNKNOWN',
         );
