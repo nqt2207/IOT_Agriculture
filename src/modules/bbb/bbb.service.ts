@@ -67,9 +67,7 @@ export class BbbService {
   ) {
     console.log('Telemetry from:', bbb.device_id);
 
-    // -----------------------------------------
     // STEP 1: Find ESP32 belonging to this BBB
-    // -----------------------------------------
 
     const esp32 = await this.esp32Repository.findOne({
       where: {
@@ -84,9 +82,7 @@ export class BbbService {
       );
     }
 
-    // -----------------------------------------
     // STEP 2: Validate according to device scope
-    // -----------------------------------------
 
     const hasZoneId =
       dto.zone_id !== undefined &&
@@ -95,10 +91,7 @@ export class BbbService {
 
     let zoneId: string | null = null;
 
-    // =========================================
     // CASE A: ZONE-LEVEL DEVICE
-    // Node1 / Node2
-    // =========================================
 
     if (esp32.scope === 'zone') {
       if (!hasZoneId) {
@@ -118,8 +111,6 @@ export class BbbService {
         );
       }
 
-      // Check Zone belongs to the same Farm as BBB
-
       const zone = await this.zoneRepository.findOne({
         where: {
           id: parsedZoneId,
@@ -133,8 +124,6 @@ export class BbbService {
         );
       }
 
-      // Check ESP32 is assigned to this Zone
-
       if (Number(esp32.zone_id) !== parsedZoneId) {
         throw new BadRequestException(
           `ESP32 '${dto.esp32_id}' is not assigned to Zone '${dto.zone_id}'`,
@@ -144,10 +133,7 @@ export class BbbService {
       zoneId = String(parsedZoneId);
     }
 
-    // =========================================
     // CASE B: FARM-LEVEL DEVICE
-    // Node3
-    // =========================================
 
     else if (esp32.scope === 'farm') {
       if (hasZoneId) {
@@ -156,9 +142,10 @@ export class BbbService {
         );
       }
 
-      // Farm-level ESP32 must not be assigned to a Zone
-
-      if (esp32.zone_id !== null && esp32.zone_id !== undefined) {
+      if (
+        esp32.zone_id !== null &&
+        esp32.zone_id !== undefined
+      ) {
         throw new BadRequestException(
           `Farm-level ESP32 '${dto.esp32_id}' must have zone_id = NULL`,
         );
@@ -167,9 +154,7 @@ export class BbbService {
       zoneId = null;
     }
 
-    // =========================================
     // CASE C: INVALID SCOPE
-    // =========================================
 
     else {
       throw new BadRequestException(
@@ -177,9 +162,7 @@ export class BbbService {
       );
     }
 
-    // -----------------------------------------
     // STEP 3: Write telemetry to InfluxDB
-    // -----------------------------------------
 
     await this.influxService.writeTelemetry(
       bbb.device_id,
@@ -189,12 +172,9 @@ export class BbbService {
       dto.sensors,
     );
 
-    // =========================================
-    // UPDATE FARM TANK STATUS FROM NODE3
-    // =========================================
+    // STEP 4: UPDATE FARM TANK STATUS FROM NODE3
 
     if (dto.sensors.tank_status !== undefined) {
-      // Chỉ ESP32_NODE3 được phép gửi trạng thái bể nước.
       if (
         esp32.device_id !== 'ESP32_NODE3' ||
         esp32.scope !== 'farm'
@@ -207,6 +187,7 @@ export class BbbService {
       const tankStatus = dto.sensors.tank_status;
 
       // 0 = AVAILABLE, 1 = EMPTY
+
       if (tankStatus !== 0 && tankStatus !== 1) {
         throw new BadRequestException(
           'tank_status must be 0 (AVAILABLE) or 1 (EMPTY)',
@@ -260,14 +241,13 @@ export class BbbService {
   // 3. RECEIVE ACTUATOR STATE
   // =========================================
 
-  
   async receiveActuatorState(
     bbb: Bbb,
     dto: ActuatorStateDto,
   ) {
     console.log('Actuator state from:', bbb.device_id);
 
-    // STEP 1: Tìm ESP32 thuộc BBB
+    // STEP 1: Find ESP32 belonging to BBB
 
     const esp32 = await this.esp32Repository.findOne({
       where: {
@@ -282,7 +262,7 @@ export class BbbService {
       );
     }
 
-    // STEP 2: Kiểm tra scope và xác định Zone
+    // STEP 2: Validate scope and determine Zone
 
     let zoneId: string | null = null;
 
@@ -322,7 +302,7 @@ export class BbbService {
       );
     }
 
-    // STEP 3: Tìm actuator
+    // STEP 3: Find actuator
 
     const actuator = await this.actuatorRepository.findOne({
       where: {
@@ -337,19 +317,19 @@ export class BbbService {
       );
     }
 
-    // STEP 4: Xác định trạng thái phản hồi
+    // STEP 4: Determine received state
 
     const newState = dto.value === 1;
     const receivedAt = new Date();
 
-    // STEP 5: Cập nhật actual_state hiện tại
+    // STEP 5: Update actual_state
 
     actuator.actual_state = newState;
     actuator.state_updated_at = receivedAt;
 
     await this.actuatorRepository.save(actuator);
 
-    // STEP 6: Nếu có command_id, cập nhật đúng lịch sử USER
+    // STEP 6: Update matching USER command log
 
     if (dto.command_id !== undefined) {
       const commandLog =
@@ -363,17 +343,12 @@ export class BbbService {
         });
 
       if (!commandLog) {
-        // Không tìm thấy log tương ứng.
-        // Không được cập nhật một log khác để thay thế.
-
         console.warn(
           `Không tìm thấy USER log cho command_id=${dto.command_id}, actuator=${dto.actuator}`,
         );
       } else if (
         commandLog.commanded_state !== newState
       ) {
-        // Phản hồi không khớp với trạng thái đã yêu cầu.
-
         console.warn(
           `State mismatch: command_id=${dto.command_id}, commanded=${commandLog.commanded_state}, received=${newState}`,
         );
@@ -381,8 +356,6 @@ export class BbbService {
         commandLog.actual_state === null ||
         commandLog.actual_state === undefined
       ) {
-        // Chỉ cập nhật khi log chưa có phản hồi.
-
         commandLog.actual_state = newState;
 
         await this.actuatorLogRepository.save(
@@ -395,22 +368,17 @@ export class BbbService {
       } else if (
         commandLog.actual_state === newState
       ) {
-        // Phản hồi trùng lặp: không ghi đè, không tạo log mới.
-
         console.log(
           `Bỏ qua ACK trùng lặp: command_id=${dto.command_id}`,
         );
       } else {
-        // Bản ghi đã được xác nhận với trạng thái khác.
-        // Không ghi đè kết quả đã xác nhận.
-
         console.warn(
           `Command đã có kết quả khác trước đó: command_id=${dto.command_id}`,
         );
       }
     }
 
-    // STEP 7: Ghi trạng thái vào InfluxDB
+    // STEP 7: Write state to InfluxDB
 
     await this.influxService.writeActuatorState(
       bbb.device_id,
@@ -421,7 +389,7 @@ export class BbbService {
       receivedAt.toISOString(),
     );
 
-    // STEP 8: Trả kết quả
+    // STEP 8: Return result
 
     return {
       message: 'Actuator state received',
@@ -435,9 +403,242 @@ export class BbbService {
     };
   }
 
+  // =========================================
+  // 4. RECEIVE ACTUATOR SNAPSHOT FROM BBB
+  // =========================================
+
+  async receiveActuatorSnapshot(
+    bbb: Bbb,
+    snapshot: {
+      action: string;
+      request_id: string;
+      bbb_id: string;
+      timestamp: string;
+      actuators: Array<{
+        esp32_id: string;
+        actuator: string;
+        mode: string;
+        desired_state: number | null;
+        actual_state: number | null;
+        reason?: string | null;
+        timestamp: string;
+      }>;
+    },
+  ) {
+    // STEP 1: Validate snapshot header
+
+    if (snapshot.action !== 'ACTUATOR_STATES') {
+      throw new BadRequestException(
+        'Invalid actuator snapshot action',
+      );
+    }
+
+    if (snapshot.bbb_id !== bbb.device_id) {
+      throw new UnauthorizedException(
+        'BBB ID mismatch',
+      );
+    }
+
+    if (
+      !snapshot.request_id ||
+      !Array.isArray(snapshot.actuators) ||
+      !snapshot.timestamp ||
+      Number.isNaN(Date.parse(snapshot.timestamp))
+    ) {
+      throw new BadRequestException(
+        'Invalid actuator snapshot',
+      );
+    }
+
+    // STEP 2: Process snapshot in a transaction
+
+    const seen = new Set<string>();
+
+    return this.actuatorRepository.manager.transaction(
+      async (manager) => {
+        const actuatorRepo =
+          manager.getRepository(Actuator);
+
+        const espRepo =
+          manager.getRepository(Esp32Device);
+
+        const zoneRepo =
+          manager.getRepository(Zone);
+
+        const results: Array<{
+          actuator_id: number;
+          esp32_id: string;
+          zone_id: number | null;
+          actuator: string;
+          control_mode: string;
+          desired_state: number | null;
+          actual_state: number | null;
+          reason: string | null;
+          timestamp: string;
+        }> = [];
+
+        for (const item of snapshot.actuators) {
+          // Validate individual item
+
+          if (
+            !item.esp32_id ||
+            !item.actuator ||
+            !['AUTO', 'MANUAL'].includes(item.mode) ||
+            (
+              item.desired_state !== 0 &&
+              item.desired_state !== 1 &&
+              item.desired_state !== null
+            ) ||
+            (
+              item.actual_state !== 0 &&
+              item.actual_state !== 1 &&
+              item.actual_state !== null
+            ) ||
+            !item.timestamp ||
+            Number.isNaN(Date.parse(item.timestamp))
+          ) {
+            throw new BadRequestException(
+              `Invalid actuator snapshot item: ${item.esp32_id}/${item.actuator}`,
+            );
+          }
+
+          // Prevent duplicate actuator entries
+
+          const key = `${item.esp32_id}:${item.actuator}`;
+
+          if (seen.has(key)) {
+            throw new BadRequestException(
+              `Duplicate actuator in snapshot: ${key}`,
+            );
+          }
+
+          seen.add(key);
+
+          // STEP 3: Find ESP32 belonging to this BBB
+
+          const esp32 = await espRepo.findOne({
+            where: {
+              bbb_id: Number(bbb.id),
+              device_id: item.esp32_id,
+            },
+          });
+
+          if (!esp32) {
+            throw new BadRequestException(
+              `ESP32 '${item.esp32_id}' does not belong to BBB '${bbb.device_id}'`,
+            );
+          }
+
+          // STEP 4: Validate device scope and Zone
+
+          let zoneId: number | null = null;
+
+          if (esp32.scope === 'zone') {
+            if (
+              esp32.zone_id === null ||
+              esp32.zone_id === undefined
+            ) {
+              throw new BadRequestException(
+                `Zone-level ESP32 '${item.esp32_id}' has no assigned zone`,
+              );
+            }
+
+            const zone = await zoneRepo.findOne({
+              where: {
+                id: Number(esp32.zone_id),
+                farm_id: Number(bbb.farm_id),
+              },
+            });
+
+            if (!zone) {
+              throw new BadRequestException(
+                `Invalid Zone assignment for ESP32 '${item.esp32_id}'`,
+              );
+            }
+
+            zoneId = Number(zone.id);
+          } else if (esp32.scope === 'farm') {
+            if (
+              esp32.zone_id !== null &&
+              esp32.zone_id !== undefined
+            ) {
+              throw new BadRequestException(
+                `Farm-level ESP32 '${item.esp32_id}' must not have a zone`,
+              );
+            }
+          } else {
+            throw new BadRequestException(
+              `Invalid scope '${esp32.scope}' for ESP32 '${item.esp32_id}'`,
+            );
+          }
+
+          // STEP 5: Find actuator belonging to this ESP32
+
+          const actuator = await actuatorRepo.findOne({
+            where: {
+              esp32_id: esp32.id,
+              name: item.actuator,
+            },
+          });
+
+          if (!actuator) {
+            throw new BadRequestException(
+              `Actuator '${item.actuator}' does not belong to ESP32 '${item.esp32_id}'`,
+            );
+          }
+
+          // STEP 6: Update current actuator state
+
+          actuator.reported_control_mode = item.mode;
+
+          // desired_state in DB is non-nullable.
+          // If BBB reports null, preserve the existing DB value.
+
+          if (item.desired_state !== null) {
+            actuator.desired_state =
+              item.desired_state === 1;
+          }
+
+          // actual_state can be null (UNKNOWN)
+
+          actuator.actual_state =
+            item.actual_state === null
+              ? null
+              : item.actual_state === 1;
+
+          actuator.state_updated_at =
+            new Date(item.timestamp);
+
+          await actuatorRepo.save(actuator);
+
+          // STEP 7: Build response
+
+          results.push({
+            actuator_id: actuator.id,
+            esp32_id: esp32.device_id,
+            zone_id: zoneId,
+            actuator: actuator.name,
+            control_mode: item.mode,
+            desired_state: item.desired_state,
+            actual_state: item.actual_state,
+            reason: item.reason ?? null,
+            timestamp: item.timestamp,
+          });
+        }
+
+        return {
+          action: 'ACTUATOR_STATES',
+          request_id: snapshot.request_id,
+          bbb_id: snapshot.bbb_id,
+          actuators: results,
+          timestamp: snapshot.timestamp,
+        };
+      },
+    );
+  }
 
   // =========================================
-  // 4. GET LATEST TELEMETRY BY ZONE
+  // 5. GET LATEST TELEMETRY BY ZONE
   // =========================================
 
   async getLatestTelemetry(zoneId: string) {
@@ -445,16 +646,17 @@ export class BbbService {
   }
 
   // =========================================
-  // 5. GET ACTUATOR STATES FROM DATABASE
+  // 6. GET ACTUATOR STATES FROM DATABASE
   // =========================================
 
   async getActuatorStatesByFarm(farmId: number) {
     const actuators = await this.actuatorRepository
       .createQueryBuilder('actuator')
       .innerJoinAndSelect('actuator.esp32', 'esp32')
-      .where('esp32.bbb_id = (SELECT id FROM bbbs WHERE farm_id = :farmId)', {
-        farmId,
-      })
+      .where(
+        'esp32.bbb_id = (SELECT id FROM bbbs WHERE farm_id = :farmId)',
+        { farmId },
+      )
       .orderBy('esp32.id', 'ASC')
       .addOrderBy('actuator.id', 'ASC')
       .getMany();
@@ -473,7 +675,7 @@ export class BbbService {
   }
 
   // =========================================
-  // 6. GET ACTUATOR STATES BY USER
+  // 7. GET ACTUATOR STATES BY USER
   // =========================================
 
   async getActuatorStatesByUser(userId: number) {
@@ -523,10 +725,9 @@ export class BbbService {
   }
 
   // =========================================
-  // 7. RECORD ACTUATOR COMMAND
+  // 8. RECORD ACTUATOR COMMAND
   // =========================================
 
-  
   async recordActuatorCommand(
     esp32DeviceId: string,
     actuatorName: string,
@@ -538,7 +739,7 @@ export class BbbService {
       );
     }
 
-    // STEP 1: Tìm ESP32
+    // STEP 1: Find ESP32
 
     const esp32 = await this.esp32Repository.findOne({
       where: {
@@ -552,7 +753,7 @@ export class BbbService {
       );
     }
 
-    // STEP 2: Tìm actuator thuộc ESP32
+    // STEP 2: Find actuator
 
     const actuator = await this.actuatorRepository.findOne({
       where: {
@@ -567,15 +768,9 @@ export class BbbService {
       );
     }
 
-    // =========================================
     // PUMP SAFETY: CHECK FARM TANK STATUS
-    // =========================================
-
-    // Chỉ kiểm tra khi có lệnh bật một actuator loại pump.
-    // Lệnh tắt bơm luôn được phép.
 
     if (actuator.type === 'pump' && state === 1) {
-      // Tìm BBB quản lý ESP32 này.
       const bbb = await this.bbbRepository.findOne({
         where: {
           id: Number(esp32.bbb_id),
@@ -588,7 +783,6 @@ export class BbbService {
         );
       }
 
-      // Lấy trạng thái bể nước từ Farm.
       const farm = await this.farmRepository.findOne({
         where: {
           id: Number(bbb.farm_id),
@@ -605,8 +799,6 @@ export class BbbService {
         );
       }
 
-      // Chỉ tank_status = 0 mới được phép bật bơm.
-      // 1 = EMPTY, null = UNKNOWN.
       if (farm.tank_status !== 0) {
         throw new BadRequestException(
           farm.tank_status === 1
@@ -616,18 +808,17 @@ export class BbbService {
       }
     }
 
-    // STEP 3: Xác định trạng thái được yêu cầu
+    // STEP 3: Determine requested state
 
     const commandedState = state === 1;
 
-    // STEP 4: Cập nhật desired_state
+    // STEP 4: Update desired_state
 
     actuator.desired_state = commandedState;
 
     await this.actuatorRepository.save(actuator);
 
-    // STEP 5: Tạo lịch sử MANUAL
-    // actual_state = null vì ESP32 chưa xác nhận.
+    // STEP 5: Create USER history log
 
     const log = this.actuatorLogRepository.create({
       actuator_id: actuator.id,
@@ -642,7 +833,7 @@ export class BbbService {
     const savedLog =
       await this.actuatorLogRepository.save(log);
 
-    // STEP 6: Trả ID để MqttTelemetryService đưa vào MQTT.
+    // STEP 6: Return command ID
 
     return {
       command_id: savedLog.id,
@@ -652,8 +843,10 @@ export class BbbService {
     };
   }
 
+  // =========================================
+  // 9. GET ACTUATOR HISTORY BY USER
+  // =========================================
 
-  
   async getActuatorHistoryByUser(
     userId: number,
     filters: {
@@ -674,7 +867,8 @@ export class BbbService {
       );
     }
 
-    // 1. Validate pagination
+    // STEP 1: Validate pagination
+
     const page = filters.page
       ? Number(filters.page)
       : 1;
@@ -695,7 +889,8 @@ export class BbbService {
       );
     }
 
-    // 2. Validate date filters
+    // STEP 2: Validate date filters
+
     let fromDate: Date | undefined;
     let toDate: Date | undefined;
 
@@ -729,7 +924,8 @@ export class BbbService {
       );
     }
 
-    // 3. Validate source
+    // STEP 3: Validate source
+
     if (
       filters.source &&
       !['USER', 'DEVICE'].includes(
@@ -741,7 +937,8 @@ export class BbbService {
       );
     }
 
-    // 4. Build query
+    // STEP 4: Build query
+
     const query = this.actuatorLogRepository
       .createQueryBuilder('log')
       .innerJoinAndSelect(
@@ -764,7 +961,7 @@ export class BbbService {
         userId,
       });
 
-    // 5. Apply filters
+    // STEP 5: Apply filters
 
     if (filters.farm_id) {
       const farmId = Number(filters.farm_id);
@@ -835,7 +1032,8 @@ export class BbbService {
       );
     }
 
-    // 6. Pagination and sorting
+    // STEP 6: Pagination and sorting
+
     query
       .orderBy('log.created_at', 'DESC')
       .addOrderBy('log.id', 'DESC')
@@ -845,9 +1043,8 @@ export class BbbService {
     const [logs, total] =
       await query.getManyAndCount();
 
-    // 7. Format response
-    
-    // 7. Format response
+    // STEP 7: Format response
+
     return {
       items: logs
         .filter(
@@ -887,7 +1084,5 @@ export class BbbService {
         totalPages: Math.ceil(total / limit),
       },
     };
-
   }
-
 }
