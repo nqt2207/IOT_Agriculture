@@ -317,8 +317,8 @@ export class MqttTelemetryService
 
           status:
             dto.sensors.tank_status === 0
-              ? 'AVAILABLE'
-              : 'EMPTY',
+              ? 'EMPTY'
+              : 'AVAILABLE',
 
           timestamp: dto.timestamp,
         });

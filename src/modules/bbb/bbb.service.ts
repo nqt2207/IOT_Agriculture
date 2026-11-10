@@ -186,11 +186,12 @@ export class BbbService {
 
       const tankStatus = dto.sensors.tank_status;
 
-      // 1 = AVAILABLE, 0 = EMPTY
+      // 0 = EMPTY
+      // 1 = AVAILABLE
 
       if (tankStatus !== 0 && tankStatus !== 1) {
         throw new BadRequestException(
-          'tank_status must be 0 (AVAILABLE) or 1 (EMPTY)',
+          'tank_status must be 0 (EMPTY) or 1 (AVAILABLE)',
         );
       }
 
@@ -203,7 +204,9 @@ export class BbbService {
       }
 
       const result = await this.farmRepository.update(
-        { id: Number(bbb.farm_id) },
+        {
+          id: Number(bbb.farm_id),
+        },
         {
           tank_status: tankStatus,
           tank_status_updated_at: updatedAt,
@@ -267,7 +270,10 @@ export class BbbService {
     let zoneId: string | null = null;
 
     if (esp32.scope === 'zone') {
-      if (!esp32.zone_id) {
+      if (
+        esp32.zone_id === null ||
+        esp32.zone_id === undefined
+      ) {
         throw new BadRequestException(
           `Zone-level ESP32 '${dto.esp32_id}' has no assigned zone`,
         );
@@ -317,19 +323,57 @@ export class BbbService {
       );
     }
 
-    // STEP 4: Determine received state
+    // STEP 4: Validate timestamp
+
+    const receivedAt = new Date(dto.timestamp);
+
+    if (Number.isNaN(receivedAt.getTime())) {
+      throw new BadRequestException(
+        'Invalid actuator state timestamp',
+      );
+    }
+
+    // value:
+    // 0    = OFF
+    // 1    = ON
+    // null = UNKNOWN
+
+    // STEP 5: Handle UNKNOWN
+
+    if (dto.value === null) {
+      console.warn(
+        `Actuator UNKNOWN: ${dto.esp32_id}/${dto.actuator} | command_id=${dto.command_id ?? 'N/A'}`,
+      );
+
+      // Do not modify actual_state.
+      // Do not convert UNKNOWN to OFF.
+      // Do not update USER log actual_state.
+      // Do not write UNKNOWN as physical state to InfluxDB.
+
+      return {
+        message: 'Actuator state is UNKNOWN',
+        status: 'UNKNOWN',
+        device_id: bbb.device_id,
+        esp32_id: dto.esp32_id,
+        zone_id: zoneId,
+        actuator: dto.actuator,
+        value: null,
+        command_id: dto.command_id ?? null,
+        actual_state: actuator.actual_state,
+        timestamp: receivedAt.toISOString(),
+      };
+    }
+
+    // STEP 6: Update actual_state
 
     const newState = dto.value === 1;
-    const receivedAt = new Date();
-
-    // STEP 5: Update actual_state
 
     actuator.actual_state = newState;
     actuator.state_updated_at = receivedAt;
 
     await this.actuatorRepository.save(actuator);
 
-    // STEP 6: Update matching USER command log
+    // STEP 7: Update matching USER command log
 
     if (dto.command_id !== undefined) {
       const commandLog =
@@ -378,7 +422,7 @@ export class BbbService {
       }
     }
 
-    // STEP 7: Write state to InfluxDB
+    // STEP 8: Write state to InfluxDB
 
     await this.influxService.writeActuatorState(
       bbb.device_id,
@@ -389,15 +433,17 @@ export class BbbService {
       receivedAt.toISOString(),
     );
 
-    // STEP 8: Return result
+    // STEP 9: Return result
 
     return {
       message: 'Actuator state received',
+      status: 'CONFIRMED',
       device_id: bbb.device_id,
       esp32_id: dto.esp32_id,
       zone_id: zoneId,
       actuator: dto.actuator,
       value: dto.value,
+      actual_state: newState,
       command_id: dto.command_id ?? null,
       timestamp: receivedAt.toISOString(),
     };
@@ -591,23 +637,22 @@ export class BbbService {
 
           actuator.reported_control_mode = item.mode;
 
-          // desired_state in DB is non-nullable.
-          // If BBB reports null, preserve the existing DB value.
+          // Preserve existing desired_state if BBB reports null.
 
           if (item.desired_state !== null) {
             actuator.desired_state =
               item.desired_state === 1;
           }
 
-          // actual_state can be null (UNKNOWN)
+          // Preserve existing actual_state if BBB reports UNKNOWN.
 
-          actuator.actual_state =
-            item.actual_state === null
-              ? null
-              : item.actual_state === 1;
+          if (item.actual_state !== null) {
+            actuator.actual_state =
+              item.actual_state === 1;
 
-          actuator.state_updated_at =
-            new Date(item.timestamp);
+            actuator.state_updated_at =
+              new Date(item.timestamp);
+          }
 
           await actuatorRepo.save(actuator);
 
@@ -768,46 +813,6 @@ export class BbbService {
       );
     }
 
-    // PUMP SAFETY: CHECK FARM TANK STATUS
-
-    if (actuator.type === 'pump' && state === 1) {
-      const bbb = await this.bbbRepository.findOne({
-        where: {
-          id: Number(esp32.bbb_id),
-        },
-      });
-
-      if (!bbb) {
-        throw new BadRequestException(
-          'Cannot verify Farm information for pump safety',
-        );
-      }
-
-      const farm = await this.farmRepository.findOne({
-        where: {
-          id: Number(bbb.farm_id),
-        },
-        select: {
-          id: true,
-          tank_status: true,
-        },
-      });
-
-      if (!farm) {
-        throw new BadRequestException(
-          'Cannot verify tank status: Farm not found',
-        );
-      }
-
-      if (farm.tank_status !== 0) {
-        throw new BadRequestException(
-          farm.tank_status === 0
-            ? 'Cannot turn on pump: water tank is EMPTY'
-            : 'Cannot turn on pump: tank status is UNKNOWN',
-        );
-      }
-    }
-
     // STEP 3: Determine requested state
 
     const commandedState = state === 1;
@@ -833,7 +838,7 @@ export class BbbService {
     const savedLog =
       await this.actuatorLogRepository.save(log);
 
-    // STEP 6: Return command ID
+    // STEP 6: Return existing command ID
 
     return {
       command_id: savedLog.id,
@@ -941,22 +946,10 @@ export class BbbService {
 
     const query = this.actuatorLogRepository
       .createQueryBuilder('log')
-      .innerJoinAndSelect(
-        'log.actuator',
-        'actuator',
-      )
-      .innerJoinAndSelect(
-        'actuator.esp32',
-        'esp32',
-      )
-      .innerJoinAndSelect(
-        'esp32.bbb',
-        'bbb',
-      )
-      .innerJoinAndSelect(
-        'bbb.farm',
-        'farm',
-      )
+      .innerJoinAndSelect('log.actuator', 'actuator')
+      .innerJoinAndSelect('actuator.esp32', 'esp32')
+      .innerJoinAndSelect('esp32.bbb', 'bbb')
+      .innerJoinAndSelect('bbb.farm', 'farm')
       .where('farm.user_id = :userId', {
         userId,
       });
