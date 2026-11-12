@@ -1,3 +1,4 @@
+
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -6,7 +7,12 @@ import { Server } from 'socket.io';
 
 @WebSocketGateway({
   cors: {
-    origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+    origin: [
+      'http://localhost:5173',
+      'https://iot-agriculture-frontend.onrender.com',
+    ],
+    methods: ['GET', 'POST'],
+    credentials: true,
   },
 })
 export class TelemetryGateway {
@@ -22,12 +28,14 @@ export class TelemetryGateway {
 
   /**
    * Gửi trạng thái thiết bị tới frontend.
-   * Ví dụ: pump1 ON, fan OFF.
    */
   emitActuatorState(data: unknown): void {
     this.server.emit('actuator:state', data);
   }
 
+  /**
+   * Gửi trạng thái bể nước tới frontend.
+   */
   emitTankStatusUpdate(data: unknown): void {
     this.server.emit('tank:status', data);
   }
