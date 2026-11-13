@@ -13,7 +13,7 @@ import { AuthGuard } from './modules/auth/auth.guard';
 import { JwtModule } from '@nestjs/jwt';
 import { ZoneModule } from './modules/zone/zone.module';
 import { FarmModule } from './modules/farm/farm.module';
-
+import { AiModule } from './modules/ai/ai.module';
 
 @Module({
   imports: [
@@ -25,6 +25,7 @@ import { FarmModule } from './modules/farm/farm.module';
     JwtModule,
     ZoneModule,
     FarmModule,
+    AiModule,
   ],
   controllers: [AppController],
   providers: [

@@ -251,6 +251,143 @@ export class InfluxService implements OnModuleDestroy {
     return rows;
   }
 
+
+  async getSensorSummary(
+    bbbId: string,
+    scope: 'farm' | 'zone',
+    sensor: string,
+    period: 'today' | 'last_24_hours' | 'last_7_days' | 'last_30_days',
+    zoneId?: string,
+  ) {
+    const allowedSensors = [
+      'temperature',
+      'humidity',
+      'soil_moisture',
+      'light',
+      'water_flow',
+      'water_volume',
+    ];
+
+    if (!allowedSensors.includes(sensor)) {
+      throw new Error('Unsupported sensor type');
+    }
+
+    if (scope === 'zone' && !zoneId) {
+      throw new Error('zoneId is required');
+    }
+
+    const now = new Date();
+    let start: Date;
+
+    if (period === 'today') {
+      // Tính đầu ngày theo múi giờ Việt Nam UTC+7
+      const vnNow = new Date(now.getTime() + 7 * 60 * 60 * 1000);
+
+      const vnStart = new Date(
+        Date.UTC(
+          vnNow.getUTCFullYear(),
+          vnNow.getUTCMonth(),
+          vnNow.getUTCDate(),
+        ),
+      );
+
+      start = new Date(vnStart.getTime() - 7 * 60 * 60 * 1000);
+    } else {
+      const durations = {
+        last_24_hours: 24 * 60 * 60 * 1000,
+        last_7_days: 7 * 24 * 60 * 60 * 1000,
+        last_30_days: 30 * 24 * 60 * 60 * 1000,
+      };
+
+      start = new Date(now.getTime() - durations[period]);
+    }
+
+    const bucket = this.configService.get<string>('influx.bucket');
+
+    const safeBbbId = bbbId.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const safeZoneId = zoneId
+      ? zoneId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+      : '';
+
+    const scopeFilter = scope === 'farm'
+      ? `r.bbb_id == "${safeBbbId}"`
+      : `r.scope == "zone" and r.zone_id == "${safeZoneId}"`;
+
+    const query = `
+      from(bucket: "${bucket}")
+        |> range(
+          start: time(v: "${start.toISOString()}"),
+          stop: time(v: "${now.toISOString()}")
+        )
+        |> filter(fn: (r) =>
+          r._measurement == "sensor_telemetry" and
+          r.sensor == "${sensor}" and
+          ${scopeFilter}
+        )
+        |> keep(columns: ["_time", "_value"])
+        |> sort(columns: ["_time"])
+        |> limit(n: 5000)
+    `;
+
+    const rows: {
+      value: number;
+      timestamp: string;
+    }[] = [];
+
+    await new Promise<void>((resolve, reject) => {
+      this.queryApi.queryRows(query, {
+        next: (row, tableMeta) => {
+          const data = tableMeta.toObject(row);
+
+          if (
+            typeof data._value === 'number' &&
+            Number.isFinite(data._value)
+          ) {
+            rows.push({
+              value: data._value,
+              timestamp: data._time,
+            });
+          }
+        },
+
+        error: reject,
+        complete: resolve,
+      });
+    });
+
+    if (rows.length === 0) {
+      return {
+        sensor,
+        scope,
+        period,
+        count: 0,
+        message: 'No sensor data found',
+      };
+    }
+
+    const values = rows.map((row) => row.value);
+
+    const sum = values.reduce(
+      (total, value) => total + value,
+      0,
+    );
+
+    const latest = rows[rows.length - 1];
+
+    return {
+      sensor,
+      scope,
+      period,
+      count: rows.length,
+      average: Number((sum / values.length).toFixed(2)),
+      min: Math.min(...values),
+      max: Math.max(...values),
+      latest: latest.value,
+      latestTimestamp: latest.timestamp,
+    };
+  }
+
+
   async onModuleDestroy() {
     await this.writeApi.close();
   }

@@ -39,6 +39,11 @@ export default () => ({
     bucket: process.env.INFLUX_BUCKET,
   },
 
+  gemini: {
+  apiKey: process.env.GEMINI_API_KEY,
+  model: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
+},
+
 });
   
 
