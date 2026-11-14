@@ -372,7 +372,7 @@ export class BbbService {
     actuator.state_updated_at = receivedAt;
 
     await this.actuatorRepository.save(actuator);
-
+    
     // STEP 7: Update matching USER command log
 
     if (dto.command_id !== undefined) {
@@ -389,6 +389,17 @@ export class BbbService {
       if (!commandLog) {
         console.warn(
           `Không tìm thấy USER log cho command_id=${dto.command_id}, actuator=${dto.actuator}`,
+        );
+      } else if (
+        commandLog.commanded_state === null ||
+        commandLog.commanded_state === undefined
+      ) {
+        // Đây là log chuyển AUTO, không phải lệnh ON/OFF.
+        // Feedback ON/OFF không được dùng để xác nhận
+        // trạng thái chuyển mode.
+
+        console.log(
+          `Feedback received for AUTO transition request: command_id=${dto.command_id}`,
         );
       } else if (
         commandLog.commanded_state !== newState
@@ -421,6 +432,7 @@ export class BbbService {
         );
       }
     }
+
 
     // STEP 8: Write state to InfluxDB
 
@@ -773,80 +785,156 @@ export class BbbService {
   // 8. RECORD ACTUATOR COMMAND
   // =========================================
 
-  async recordActuatorCommand(
-    esp32DeviceId: string,
-    actuatorName: string,
-    state: number,
+  
+async recordActuatorCommand(
+  esp32DeviceId: string,
+  actuatorName: string,
+  action: 'SET_STATE' | 'RETURN_TO_AUTO',
+  mode: 'MANUAL' | 'AUTO',
+  state?: number,
+) {
+  // STEP 1: Validate action and mode
+
+  if (
+    action === 'SET_STATE' &&
+    mode !== 'MANUAL'
   ) {
-    if (state !== 0 && state !== 1) {
-      throw new BadRequestException(
-        'State chỉ được phép là 0 hoặc 1',
-      );
-    }
-
-    // STEP 1: Find ESP32
-
-    const esp32 = await this.esp32Repository.findOne({
-      where: {
-        device_id: esp32DeviceId,
-      },
-    });
-
-    if (!esp32) {
-      throw new BadRequestException(
-        `Không tìm thấy ESP32 '${esp32DeviceId}'`,
-      );
-    }
-
-    // STEP 2: Find actuator
-
-    const actuator = await this.actuatorRepository.findOne({
-      where: {
-        esp32_id: esp32.id,
-        name: actuatorName,
-      },
-    });
-
-    if (!actuator) {
-      throw new BadRequestException(
-        `Không tìm thấy actuator '${actuatorName}'`,
-      );
-    }
-
-    // STEP 3: Determine requested state
-
-    const commandedState = state === 1;
-
-    // STEP 4: Update desired_state
-
-    actuator.desired_state = commandedState;
-
-    await this.actuatorRepository.save(actuator);
-
-    // STEP 5: Create USER history log
-
-    const log = this.actuatorLogRepository.create({
-      actuator_id: actuator.id,
-      actuator_name: actuator.name,
-      control_mode: 'manual',
-      commanded_state: commandedState,
-      actual_state: null,
-      source: 'USER',
-      created_at: new Date(),
-    });
-
-    const savedLog =
-      await this.actuatorLogRepository.save(log);
-
-    // STEP 6: Return existing command ID
-
-    return {
-      command_id: savedLog.id,
-      actuator: actuator.name,
-      commanded_state: commandedState,
-      message: 'Đã ghi nhận lệnh điều khiển',
-    };
+    throw new BadRequestException(
+      'SET_STATE chỉ được sử dụng với mode MANUAL',
+    );
   }
+
+  if (
+    action === 'RETURN_TO_AUTO' &&
+    mode !== 'AUTO'
+  ) {
+    throw new BadRequestException(
+      'RETURN_TO_AUTO chỉ được sử dụng với mode AUTO',
+    );
+  }
+
+  if (
+    action === 'SET_STATE' &&
+    state !== 0 &&
+    state !== 1
+  ) {
+    throw new BadRequestException(
+      'State chỉ được phép là 0 hoặc 1',
+    );
+  }
+
+  if (
+    action === 'RETURN_TO_AUTO' &&
+    state !== undefined
+  ) {
+    throw new BadRequestException(
+      'RETURN_TO_AUTO không được chứa state',
+    );
+  }
+
+  // STEP 2: Use transaction
+
+  return this.actuatorRepository.manager.transaction(
+    async (manager) => {
+      const espRepo =
+        manager.getRepository(Esp32Device);
+
+      const actuatorRepo =
+        manager.getRepository(Actuator);
+
+      const logRepo =
+        manager.getRepository(ActuatorLog);
+
+      // STEP 3: Find ESP32
+
+      const esp32 = await espRepo.findOne({
+        where: {
+          device_id: esp32DeviceId,
+        },
+      });
+
+      if (!esp32) {
+        throw new BadRequestException(
+          `Không tìm thấy ESP32 '${esp32DeviceId}'`,
+        );
+      }
+
+      // STEP 4: Find actuator
+
+      const actuator = await actuatorRepo.findOne({
+        where: {
+          esp32_id: esp32.id,
+          name: actuatorName,
+        },
+      });
+
+      if (!actuator) {
+        throw new BadRequestException(
+          `Không tìm thấy actuator '${actuatorName}'`,
+        );
+      }
+
+      // STEP 5: Update desired state only for MANUAL
+
+      let commandedState: boolean | null = null;
+
+      if (action === 'SET_STATE') {
+        commandedState = state === 1;
+
+        actuator.desired_state = commandedState;
+      }
+
+      // Update requested control mode.
+      // reported_control_mode is updated only
+      // when BBB reports its actual mode.
+
+      actuator.control_mode = mode.toLowerCase();
+
+      await actuatorRepo.save(actuator);
+
+      // STEP 6: Create USER history log
+
+      const log = logRepo.create({
+        actuator_id: actuator.id,
+        actuator_name: actuator.name,
+
+        control_mode: mode.toLowerCase(),
+
+        commanded_state: commandedState,
+
+        actual_state: null,
+
+        source: 'USER',
+
+        created_at: new Date(),
+      });
+
+      const savedLog = await logRepo.save(log);
+
+      // STEP 7: Return command information
+
+      return {
+        command_id: savedLog.id,
+
+        esp32_id: esp32.device_id,
+
+        actuator: actuator.name,
+
+        action,
+
+        mode,
+
+        commanded_state: commandedState,
+
+        message:
+          action === 'SET_STATE'
+            ? 'Đã ghi nhận lệnh MANUAL'
+            : 'Đã ghi nhận yêu cầu chuyển AUTO',
+      };
+    },
+  );
+}
+
 
   // =========================================
   // 9. GET ACTUATOR HISTORY BY USER

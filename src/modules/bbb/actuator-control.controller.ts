@@ -1,9 +1,11 @@
+
 import {
   Body,
   Controller,
   Get,
   Post,
 } from '@nestjs/common';
+
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -21,14 +23,9 @@ export class ActuatorControlController {
     private readonly mqttTelemetryService: MqttTelemetryService,
   ) {}
 
-  /**
-   * Gửi lệnh điều khiển thiết bị tới BBB qua MQTT.
-   *
-   * POST /api/v1/bbb/actuators/control
-   */
   @Post('control')
   @ApiOperation({
-    summary: 'Điều khiển thiết bị thông qua BBB',
+    summary: 'Điều khiển actuator thông qua BBB',
   })
   async controlActuator(
     @Body() dto: ActuatorControlDto,
@@ -36,18 +33,15 @@ export class ActuatorControlController {
     return this.mqttTelemetryService.publishActuatorCommand(
       dto.esp32_id,
       dto.actuator,
+      dto.action,
+      dto.mode,
       dto.state,
-    );  
+    );
   }
 
-  /**
-   * Lấy trạng thái mô phỏng của các thiết bị.
-   *
-   * GET /api/v1/bbb/actuators/state
-   */
   @Get('state')
   @ApiOperation({
-    summary: 'Lấy trạng thái các thiết bị',
+    summary: 'Lấy trạng thái các actuator',
   })
   getActuatorState() {
     return this.mqttTelemetryService.getActuatorState();

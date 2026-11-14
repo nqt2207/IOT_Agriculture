@@ -296,8 +296,8 @@ export class MqttTelemetryService
       });
 
       // Node3 tank status:
-      // 0 = AVAILABLE
-      // 1 = EMPTY
+      // 1 = AVAILABLE
+      // 0 = EMPTY
 
       if (
         dto.esp32_id === 'ESP32_NODE3' &&
@@ -351,11 +351,16 @@ export class MqttTelemetryService
   // 3. PUBLISH ACTUATOR COMMAND
   // =====================================================
 
+  
   async publishActuatorCommand(
     esp32Id: string,
     actuator: string,
-    value: number,
+    action: 'SET_STATE' | 'RETURN_TO_AUTO',
+    mode: 'MANUAL' | 'AUTO',
+    value?: number,
   ): Promise<Record<string, unknown>> {
+    // STEP 1: Validate input
+
     if (!esp32Id || !esp32Id.trim()) {
       throw new BadRequestException(
         'esp32_id không được để trống.',
@@ -368,11 +373,44 @@ export class MqttTelemetryService
       );
     }
 
-    if (value !== 0 && value !== 1) {
+    if (
+      action === 'SET_STATE' &&
+      mode !== 'MANUAL'
+    ) {
       throw new BadRequestException(
-        'Giá trị điều khiển chỉ được phép là 0 hoặc 1.',
+        'SET_STATE yêu cầu mode MANUAL.',
       );
     }
+
+    if (
+      action === 'RETURN_TO_AUTO' &&
+      mode !== 'AUTO'
+    ) {
+      throw new BadRequestException(
+        'RETURN_TO_AUTO yêu cầu mode AUTO.',
+      );
+    }
+
+    if (
+      action === 'SET_STATE' &&
+      value !== 0 &&
+      value !== 1
+    ) {
+      throw new BadRequestException(
+        'State chỉ được phép là 0 hoặc 1.',
+      );
+    }
+
+    if (
+      action === 'RETURN_TO_AUTO' &&
+      value !== undefined
+    ) {
+      throw new BadRequestException(
+        'RETURN_TO_AUTO không được chứa state.',
+      );
+    }
+
+    // STEP 2: Check MQTT connection
 
     const mqttClient = this.client;
 
@@ -382,29 +420,46 @@ export class MqttTelemetryService
       );
     }
 
+    // STEP 3: Record command and get command_id
+
     const command =
       await this.bbbService.recordActuatorCommand(
         esp32Id,
         actuator,
+        action,
+        mode,
         value,
       );
 
-    const payload = {
+    // STEP 4: Build MQTT payload
+
+    const payload: Record<string, unknown> = {
       esp32_id: esp32Id,
       actuator,
-      state: value,
+      action,
+      mode,
       command_id: command.command_id,
       timestamp: new Date().toISOString(),
     };
 
+    // Only MANUAL SET_STATE contains state.
+    if (action === 'SET_STATE') {
+      payload.state = value;
+    }
+
     const message = JSON.stringify(payload);
+
+    // STEP 5: Publish MQTT
 
     return new Promise((resolve, reject) => {
       try {
         mqttClient.publish(
           this.commandTopic,
           message,
-          { qos: 1, retain: false },
+          {
+            qos: 1,
+            retain: false,
+          },
           (error) => {
             if (error) {
               this.logger.error(
@@ -413,7 +468,7 @@ export class MqttTelemetryService
 
               reject(
                 new ServiceUnavailableException(
-                  'Không thể publish lệnh lên MQTT. Lệnh chưa được xác nhận bởi thiết bị.',
+                  'Không thể publish lệnh lên MQTT.',
                 ),
               );
 
@@ -426,10 +481,15 @@ export class MqttTelemetryService
 
             resolve({
               device_id: 'BBB_01',
+
               topic: this.commandTopic,
+
               ...payload,
+
               message:
-                'Lệnh đã được publish lên MQTT. Đang chờ ESP32 xác nhận.',
+                action === 'SET_STATE'
+                  ? 'Lệnh MANUAL đã được publish lên MQTT. Đang chờ phản hồi từ ESP32.'
+                  : 'Yêu cầu chuyển AUTO đã được publish lên MQTT. Đang chờ BBB xử lý.',
             });
           },
         );
@@ -451,6 +511,7 @@ export class MqttTelemetryService
       }
     });
   }
+
 
   // =====================================================
   // 4. REQUEST ACTUATOR SNAPSHOT FROM BBB
