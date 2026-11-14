@@ -46,6 +46,111 @@ export class BbbService {
   ) {}
 
   // =========================================
+  // TIMESTAMP HELPERS
+  // =========================================
+
+  /**
+   * Chấp nhận:
+   * - Unix timestamp milliseconds.
+   * - ISO-8601 có timezone, ví dụ:
+   *   2026-11-14T10:20:00.000Z
+   *   2026-11-14T17:20:00+07:00
+   *
+   * Không chấp nhận Unix seconds hoặc uptime seconds.
+   * Tránh trường hợp timestamp bị lưu thành năm 1970.
+   */
+  private parseTimestamp(value: unknown): Date {
+    let date: Date;
+
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value) || value < 1_000_000_000_000) {
+        throw new BadRequestException(
+          'Timestamp phải là Unix milliseconds hoặc ISO-8601',
+        );
+      }
+
+      date = new Date(value);
+    } else if (typeof value === 'string') {
+      const trimmed = value.trim();
+
+      if (!trimmed) {
+        throw new BadRequestException(
+          'Timestamp không được để trống',
+        );
+      }
+
+      // Numeric string: chỉ chấp nhận Unix milliseconds.
+      if (/^\d+$/.test(trimmed)) {
+        const milliseconds = Number(trimmed);
+
+        if (
+          !Number.isSafeInteger(milliseconds) ||
+          milliseconds < 1_000_000_000_000
+        ) {
+          throw new BadRequestException(
+            'Timestamp dạng số phải là Unix milliseconds',
+          );
+        }
+
+        date = new Date(milliseconds);
+      } else {
+        // ISO-8601 bắt buộc phải có timezone.
+        const hasTimezone =
+          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(
+            trimmed,
+          );
+
+        if (!hasTimezone) {
+          throw new BadRequestException(
+            'Timestamp phải là ISO-8601 có timezone',
+          );
+        }
+
+        date = new Date(trimmed);
+      }
+    } else {
+      throw new BadRequestException(
+        'Timestamp không hợp lệ',
+      );
+    }
+
+    if (
+      Number.isNaN(date.getTime()) ||
+      date.getTime() < Date.UTC(2000, 0, 1)
+    ) {
+      throw new BadRequestException(
+        'Timestamp không hợp lệ hoặc nằm ngoài khoảng thời gian cho phép',
+      );
+    }
+
+    return date;
+  }
+
+  /**
+   * Kiểm tra timestamp mới có thực sự mới hơn
+   * timestamp đang lưu trong database hay không.
+   *
+   * Nếu timestamp hiện tại null hoặc không hợp lệ,
+   * cho phép cập nhật.
+   */
+  private isNewerTimestamp(
+    incoming: Date,
+    current: Date | string | null | undefined,
+  ): boolean {
+    if (current === null || current === undefined) {
+      return true;
+    }
+
+    const currentDate = new Date(current);
+
+    if (Number.isNaN(currentDate.getTime())) {
+      return true;
+    }
+
+    return incoming.getTime() > currentDate.getTime();
+  }
+
+  // =========================================
   // 1. FIND BBB
   // =========================================
 
@@ -195,35 +300,43 @@ export class BbbService {
         );
       }
 
-      const updatedAt = new Date(dto.timestamp);
+      const updatedAt = this.parseTimestamp(dto.timestamp);
 
-      if (Number.isNaN(updatedAt.getTime())) {
-        throw new BadRequestException(
-          'Invalid tank_status timestamp',
-        );
-      }
-
-      const result = await this.farmRepository.update(
-        {
+      const farm = await this.farmRepository.findOne({
+        where: {
           id: Number(bbb.farm_id),
         },
-        {
-          tank_status: tankStatus,
-          tank_status_updated_at: updatedAt,
-        },
-      );
+      });
 
-      if (!result.affected) {
+      if (!farm) {
         throw new BadRequestException(
           `Farm '${bbb.farm_id}' not found`,
         );
       }
 
-      console.log(
-        `Tank status updated: Farm=${bbb.farm_id} | ${
-          tankStatus === 0 ? 'EMPTY' : 'AVAILABLE'
-        }`,
-      );
+      // Không để telemetry cũ ghi đè tank status mới.
+
+      if (
+        this.isNewerTimestamp(
+          updatedAt,
+          farm.tank_status_updated_at,
+        )
+      ) {
+        farm.tank_status = tankStatus;
+        farm.tank_status_updated_at = updatedAt;
+
+        await this.farmRepository.save(farm);
+
+        console.log(
+          `Tank status updated: Farm=${bbb.farm_id} | ${
+            tankStatus === 0 ? 'EMPTY' : 'AVAILABLE'
+          }`,
+        );
+      } else {
+        console.warn(
+          `Ignored stale tank status: Farm=${bbb.farm_id} | timestamp=${updatedAt.toISOString()}`,
+        );
+      }
     }
 
     console.log(
@@ -249,6 +362,15 @@ export class BbbService {
     dto: ActuatorStateDto,
   ) {
     console.log('Actuator state from:', bbb.device_id);
+
+    console.log('ACTUATOR STATE PAYLOAD:', {
+      esp32_id: dto.esp32_id,
+      actuator: dto.actuator,
+      value: dto.value,
+      value_type: typeof dto.value,
+      command_id: dto.command_id,
+      timestamp: dto.timestamp,
+    });
 
     // STEP 1: Find ESP32 belonging to BBB
 
@@ -325,13 +447,7 @@ export class BbbService {
 
     // STEP 4: Validate timestamp
 
-    const receivedAt = new Date(dto.timestamp);
-
-    if (Number.isNaN(receivedAt.getTime())) {
-      throw new BadRequestException(
-        'Invalid actuator state timestamp',
-      );
-    }
+    const receivedAt = this.parseTimestamp(dto.timestamp);
 
     // value:
     // 0    = OFF
@@ -364,16 +480,43 @@ export class BbbService {
       };
     }
 
-    // STEP 6: Update actual_state
+    // STEP 6: Validate value
+
+    if (dto.value !== 0 && dto.value !== 1) {
+      throw new BadRequestException(
+        'Actuator value must be 0, 1 or null',
+      );
+    }
+
+    // STEP 7: Update actual_state only when feedback is newer
 
     const newState = dto.value === 1;
 
-    actuator.actual_state = newState;
-    actuator.state_updated_at = receivedAt;
+    const isNewer = this.isNewerTimestamp(
+      receivedAt,
+      actuator.state_updated_at,
+    );
 
-    await this.actuatorRepository.save(actuator);
-    
-    // STEP 7: Update matching USER command log
+    if (isNewer) {
+      actuator.actual_state = newState;
+      actuator.state_updated_at = receivedAt;
+
+      await this.actuatorRepository.save(actuator);
+
+      console.log(
+        `ACTUAL STATE UPDATED: ${dto.esp32_id}/${dto.actuator} = ${newState} | timestamp=${receivedAt.toISOString()}`,
+      );
+    } else {
+      console.warn(
+        `STALE ACTUATOR FEEDBACK IGNORED: ${dto.esp32_id}/${dto.actuator} | received=${receivedAt.toISOString()} | current=${actuator.state_updated_at}`,
+      );
+    }
+
+    // STEP 8: Update matching USER command log
+
+    // Việc cập nhật lịch sử xác nhận command
+    // không phụ thuộc việc feedback có mới hơn
+    // actual_state hiện tại trong database hay không.
 
     if (dto.command_id !== undefined) {
       const commandLog =
@@ -433,8 +576,7 @@ export class BbbService {
       }
     }
 
-
-    // STEP 8: Write state to InfluxDB
+    // STEP 9: Write valid physical state to InfluxDB
 
     await this.influxService.writeActuatorState(
       bbb.device_id,
@@ -445,17 +587,27 @@ export class BbbService {
       receivedAt.toISOString(),
     );
 
-    // STEP 9: Return result
+    // STEP 10: Return result
 
     return {
-      message: 'Actuator state received',
-      status: 'CONFIRMED',
+      message: isNewer
+        ? 'Actuator state received'
+        : 'Actuator feedback received but ignored because it is stale',
+
+      status: isNewer ? 'CONFIRMED' : 'STALE',
+
       device_id: bbb.device_id,
       esp32_id: dto.esp32_id,
       zone_id: zoneId,
       actuator: dto.actuator,
+
       value: dto.value,
-      actual_state: newState,
+
+      // Trả về trạng thái mới nhất đang lưu trong DB,
+      // không trả về trạng thái feedback cũ.
+
+      actual_state: actuator.actual_state,
+
       command_id: dto.command_id ?? null,
       timestamp: receivedAt.toISOString(),
     };
@@ -500,13 +652,16 @@ export class BbbService {
     if (
       !snapshot.request_id ||
       !Array.isArray(snapshot.actuators) ||
-      !snapshot.timestamp ||
-      Number.isNaN(Date.parse(snapshot.timestamp))
+      !snapshot.timestamp
     ) {
       throw new BadRequestException(
         'Invalid actuator snapshot',
       );
     }
+
+    const snapshotReceivedAt = this.parseTimestamp(
+      snapshot.timestamp,
+    );
 
     // STEP 2: Process snapshot in a transaction
 
@@ -533,6 +688,7 @@ export class BbbService {
           actual_state: number | null;
           reason: string | null;
           timestamp: string;
+          state_updated: boolean;
         }> = [];
 
         for (const item of snapshot.actuators) {
@@ -552,13 +708,16 @@ export class BbbService {
               item.actual_state !== 1 &&
               item.actual_state !== null
             ) ||
-            !item.timestamp ||
-            Number.isNaN(Date.parse(item.timestamp))
+            !item.timestamp
           ) {
             throw new BadRequestException(
               `Invalid actuator snapshot item: ${item.esp32_id}/${item.actuator}`,
             );
           }
+
+          const itemTimestamp = this.parseTimestamp(
+            item.timestamp,
+          );
 
           // Prevent duplicate actuator entries
 
@@ -645,30 +804,51 @@ export class BbbService {
             );
           }
 
-          // STEP 6: Update current actuator state
+          // STEP 6: Update reported mode from BBB
+
+          // BBB là nơi quản lý AUTO/MANUAL.
+          // Backend chỉ cập nhật reported_control_mode
+          // khi nhận snapshot từ BBB.
 
           actuator.reported_control_mode = item.mode;
 
-          // Preserve existing desired_state if BBB reports null.
+          // STEP 7: Protect current states from stale snapshot
 
-          if (item.desired_state !== null) {
-            actuator.desired_state =
-              item.desired_state === 1;
-          }
+          const isNewer = this.isNewerTimestamp(
+            itemTimestamp,
+            actuator.state_updated_at,
+          );
 
-          // Preserve existing actual_state if BBB reports UNKNOWN.
+          if (isNewer) {
+            // Preserve desired_state if BBB reports null.
 
-          if (item.actual_state !== null) {
-            actuator.actual_state =
-              item.actual_state === 1;
+            if (item.desired_state !== null) {
+              actuator.desired_state =
+                item.desired_state === 1;
+            }
 
-            actuator.state_updated_at =
-              new Date(item.timestamp);
+            // Preserve actual_state if BBB reports UNKNOWN.
+
+            if (item.actual_state !== null) {
+              actuator.actual_state =
+                item.actual_state === 1;
+
+              actuator.state_updated_at =
+                itemTimestamp;
+            }
+
+            console.log(
+              `SNAPSHOT UPDATED: ${item.esp32_id}/${item.actuator} | mode=${item.mode} | desired=${item.desired_state} | actual=${item.actual_state}`,
+            );
+          } else {
+            console.warn(
+              `STALE SNAPSHOT STATE IGNORED: ${item.esp32_id}/${item.actuator} | snapshot=${itemTimestamp.toISOString()} | current=${actuator.state_updated_at}`,
+            );
           }
 
           await actuatorRepo.save(actuator);
 
-          // STEP 7: Build response
+          // STEP 8: Build response
 
           results.push({
             actuator_id: actuator.id,
@@ -676,10 +856,29 @@ export class BbbService {
             zone_id: zoneId,
             actuator: actuator.name,
             control_mode: item.mode,
-            desired_state: item.desired_state,
-            actual_state: item.actual_state,
+
+            // Trả về trạng thái mới nhất trong DB,
+            // không trả về giá trị snapshot cũ.
+
+            desired_state:
+              actuator.desired_state === null ||
+              actuator.desired_state === undefined
+                ? null
+                : actuator.desired_state
+                  ? 1
+                  : 0,
+
+            actual_state:
+              actuator.actual_state === null ||
+              actuator.actual_state === undefined
+                ? null
+                : actuator.actual_state
+                  ? 1
+                  : 0,
+
             reason: item.reason ?? null,
-            timestamp: item.timestamp,
+            timestamp: itemTimestamp.toISOString(),
+            state_updated: isNewer,
           });
         }
 
@@ -688,7 +887,7 @@ export class BbbService {
           request_id: snapshot.request_id,
           bbb_id: snapshot.bbb_id,
           actuators: results,
-          timestamp: snapshot.timestamp,
+          timestamp: snapshotReceivedAt.toISOString(),
         };
       },
     );
@@ -785,156 +984,154 @@ export class BbbService {
   // 8. RECORD ACTUATOR COMMAND
   // =========================================
 
-  
-async recordActuatorCommand(
-  esp32DeviceId: string,
-  actuatorName: string,
-  action: 'SET_STATE' | 'RETURN_TO_AUTO',
-  mode: 'MANUAL' | 'AUTO',
-  state?: number,
-) {
-  // STEP 1: Validate action and mode
-
-  if (
-    action === 'SET_STATE' &&
-    mode !== 'MANUAL'
+  async recordActuatorCommand(
+    esp32DeviceId: string,
+    actuatorName: string,
+    action: 'SET_STATE' | 'RETURN_TO_AUTO',
+    mode: 'MANUAL' | 'AUTO',
+    state?: number,
   ) {
-    throw new BadRequestException(
-      'SET_STATE chỉ được sử dụng với mode MANUAL',
+    // STEP 1: Validate action and mode
+
+    if (
+      action === 'SET_STATE' &&
+      mode !== 'MANUAL'
+    ) {
+      throw new BadRequestException(
+        'SET_STATE chỉ được sử dụng với mode MANUAL',
+      );
+    }
+
+    if (
+      action === 'RETURN_TO_AUTO' &&
+      mode !== 'AUTO'
+    ) {
+      throw new BadRequestException(
+        'RETURN_TO_AUTO chỉ được sử dụng với mode AUTO',
+      );
+    }
+
+    if (
+      action === 'SET_STATE' &&
+      state !== 0 &&
+      state !== 1
+    ) {
+      throw new BadRequestException(
+        'State chỉ được phép là 0 hoặc 1',
+      );
+    }
+
+    if (
+      action === 'RETURN_TO_AUTO' &&
+      state !== undefined
+    ) {
+      throw new BadRequestException(
+        'RETURN_TO_AUTO không được chứa state',
+      );
+    }
+
+    // STEP 2: Use transaction
+
+    return this.actuatorRepository.manager.transaction(
+      async (manager) => {
+        const espRepo =
+          manager.getRepository(Esp32Device);
+
+        const actuatorRepo =
+          manager.getRepository(Actuator);
+
+        const logRepo =
+          manager.getRepository(ActuatorLog);
+
+        // STEP 3: Find ESP32
+
+        const esp32 = await espRepo.findOne({
+          where: {
+            device_id: esp32DeviceId,
+          },
+        });
+
+        if (!esp32) {
+          throw new BadRequestException(
+            `Không tìm thấy ESP32 '${esp32DeviceId}'`,
+          );
+        }
+
+        // STEP 4: Find actuator
+
+        const actuator = await actuatorRepo.findOne({
+          where: {
+            esp32_id: esp32.id,
+            name: actuatorName,
+          },
+        });
+
+        if (!actuator) {
+          throw new BadRequestException(
+            `Không tìm thấy actuator '${actuatorName}'`,
+          );
+        }
+
+        // STEP 5: Update desired state only for MANUAL
+
+        let commandedState: boolean | null = null;
+
+        if (action === 'SET_STATE') {
+          commandedState = state === 1;
+
+          actuator.desired_state = commandedState;
+        }
+
+        // Update requested control mode.
+        // reported_control_mode is updated only
+        // when BBB reports its actual mode.
+
+        actuator.control_mode = mode.toLowerCase();
+
+        await actuatorRepo.save(actuator);
+
+        // STEP 6: Create USER history log
+
+        const log = logRepo.create({
+          actuator_id: actuator.id,
+          actuator_name: actuator.name,
+
+          control_mode: mode.toLowerCase(),
+
+          commanded_state: commandedState,
+
+          actual_state: null,
+
+          source: 'USER',
+
+          created_at: new Date(),
+        });
+
+        const savedLog = await logRepo.save(log);
+
+        // STEP 7: Return command information
+
+        return {
+          command_id: savedLog.id,
+
+          esp32_id: esp32.device_id,
+
+          actuator: actuator.name,
+
+          action,
+
+          mode,
+
+          commanded_state: commandedState,
+
+          message:
+            action === 'SET_STATE'
+              ? 'Đã ghi nhận lệnh MANUAL'
+              : 'Đã ghi nhận yêu cầu chuyển AUTO',
+        };
+      },
     );
   }
-
-  if (
-    action === 'RETURN_TO_AUTO' &&
-    mode !== 'AUTO'
-  ) {
-    throw new BadRequestException(
-      'RETURN_TO_AUTO chỉ được sử dụng với mode AUTO',
-    );
-  }
-
-  if (
-    action === 'SET_STATE' &&
-    state !== 0 &&
-    state !== 1
-  ) {
-    throw new BadRequestException(
-      'State chỉ được phép là 0 hoặc 1',
-    );
-  }
-
-  if (
-    action === 'RETURN_TO_AUTO' &&
-    state !== undefined
-  ) {
-    throw new BadRequestException(
-      'RETURN_TO_AUTO không được chứa state',
-    );
-  }
-
-  // STEP 2: Use transaction
-
-  return this.actuatorRepository.manager.transaction(
-    async (manager) => {
-      const espRepo =
-        manager.getRepository(Esp32Device);
-
-      const actuatorRepo =
-        manager.getRepository(Actuator);
-
-      const logRepo =
-        manager.getRepository(ActuatorLog);
-
-      // STEP 3: Find ESP32
-
-      const esp32 = await espRepo.findOne({
-        where: {
-          device_id: esp32DeviceId,
-        },
-      });
-
-      if (!esp32) {
-        throw new BadRequestException(
-          `Không tìm thấy ESP32 '${esp32DeviceId}'`,
-        );
-      }
-
-      // STEP 4: Find actuator
-
-      const actuator = await actuatorRepo.findOne({
-        where: {
-          esp32_id: esp32.id,
-          name: actuatorName,
-        },
-      });
-
-      if (!actuator) {
-        throw new BadRequestException(
-          `Không tìm thấy actuator '${actuatorName}'`,
-        );
-      }
-
-      // STEP 5: Update desired state only for MANUAL
-
-      let commandedState: boolean | null = null;
-
-      if (action === 'SET_STATE') {
-        commandedState = state === 1;
-
-        actuator.desired_state = commandedState;
-      }
-
-      // Update requested control mode.
-      // reported_control_mode is updated only
-      // when BBB reports its actual mode.
-
-      actuator.control_mode = mode.toLowerCase();
-
-      await actuatorRepo.save(actuator);
-
-      // STEP 6: Create USER history log
-
-      const log = logRepo.create({
-        actuator_id: actuator.id,
-        actuator_name: actuator.name,
-
-        control_mode: mode.toLowerCase(),
-
-        commanded_state: commandedState,
-
-        actual_state: null,
-
-        source: 'USER',
-
-        created_at: new Date(),
-      });
-
-      const savedLog = await logRepo.save(log);
-
-      // STEP 7: Return command information
-
-      return {
-        command_id: savedLog.id,
-
-        esp32_id: esp32.device_id,
-
-        actuator: actuator.name,
-
-        action,
-
-        mode,
-
-        commanded_state: commandedState,
-
-        message:
-          action === 'SET_STATE'
-            ? 'Đã ghi nhận lệnh MANUAL'
-            : 'Đã ghi nhận yêu cầu chuyển AUTO',
-      };
-    },
-  );
-}
-
 
   // =========================================
   // 9. GET ACTUATOR HISTORY BY USER
